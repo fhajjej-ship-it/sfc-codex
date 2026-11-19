@@ -20,7 +20,7 @@ def main():
             .replace('@VERSION@', args.tag.removeprefix('v'))
             .replace('../assets/sfc-app-icon.png', 'sfc-app-icon.png'))
     (args.output / 'index.html').write_text(html, encoding='utf-8')
-    for name in ('styles.css', 'site.js', 'explorer.css', 'explorer.js'):
+    for name in ('styles.css', 'site.js', 'explorer.css', 'explorer.js', 'social-card.png', 'sitemap.xml'):
         copyfile(source / name, args.output / name)
     copyfile(source.parent / 'assets/sfc-app-icon.png', args.output / 'sfc-app-icon.png')
 
