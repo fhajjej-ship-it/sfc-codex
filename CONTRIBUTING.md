@@ -10,6 +10,8 @@ Keep a pull request focused on one change and describe how you verified it.
 GitHub runs **Tests and plugin validation** on Linux and **macOS session tests**
 on pull requests targeting `main`. Open the pull request's **Checks** tab to see
 the results. A first-time contributor's workflow may wait for maintainer approval.
+Linux checks use the minimum supported Python version. The macOS session checks
+use Python 3.14 to exercise native process cleanup.
 
 Run the same checks locally from the repository root.
 

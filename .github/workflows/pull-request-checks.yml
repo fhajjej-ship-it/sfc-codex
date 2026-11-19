@@ -37,6 +37,15 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: '3.10'
+          python-version: '3.14'
+      - name: Verify native session support
+        env:
+          PYTHONPATH: scripts
+        run: |
+          python3 - <<'PY'
+          from sfc_lib.lifeline import supported
+          if not supported():
+              raise SystemExit('This runner cannot exercise the macOS session or process cleanup tests.')
+          PY
       - name: Run session runtime tests
         run: python3 -m unittest discover -s tests -p 'test_session_runtime.py' -v
