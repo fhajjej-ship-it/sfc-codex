@@ -8,7 +8,9 @@
   <title>SFC · Software Factory Codex</title>
   <link rel="icon" href="sfc-app-icon.png" type="image/png">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="explorer.css">
   <script src="site.js" defer></script>
+  <script src="explorer.js" defer></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -18,7 +20,8 @@
       <span>SFC</span>
     </a>
     <nav aria-label="Main navigation">
-      <a href="#workflow">Workflow</a>
+      <a href="#skill-map">Skill map</a>
+      <a href="#board-demo">Board demo</a>
       <a href="#install">Install</a>
       <a class="nav-source" href="https://github.com/fhajjej-ship-it/sfc-codex">GitHub</a>
     </nav>
@@ -32,7 +35,7 @@
         <p class="lead">Give Codex a scoped issue with acceptance criteria. SFC builds it in an isolated worktree, runs your checks, and brings you a pull request with independent review.</p>
         <div class="hero-actions">
           <a class="button primary" href="#install">Install SFC</a>
-          <a class="button secondary" href="https://github.com/fhajjej-ship-it/sfc-codex">View source</a>
+          <a class="button secondary" href="#board-demo">Try the board demo</a>
         </div>
         <a class="release-link" href="https://github.com/fhajjej-ship-it/sfc-codex/releases/tag/@TAG@">@TAG@</a>
         <span class="license">MIT licensed</span>
@@ -66,6 +69,82 @@
         </ol>
       </section>
     </section>
+
+    <section class="explorer-section" id="skill-map" aria-labelledby="skill-map-title">
+      <div class="section-heading">
+        <h2 id="skill-map-title">Explore the skill map</h2>
+        <p>Follow an issue through SFC. Select a step to see what it reads, what it produces, and which skill runs it.</p>
+      </div>
+      <div class="map" id="map" hidden>
+        <div class="map-tools">
+          <label class="map-search"><span>Find a skill</span><input type="search" id="map-search" placeholder="Search skills or stages" autocomplete="off"></label>
+          <div class="map-actions" aria-label="Map view controls">
+            <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
+            <output id="zoom-level">100%</output>
+            <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
+            <button type="button" id="fit-map">Fit</button>
+            <button type="button" id="expand-map" hidden>Full screen</button>
+          </div>
+        </div>
+        <p class="map-results" id="map-results" role="status">Select a node to explore.</p>
+        <div class="map-content">
+          <div class="map-viewport" id="map-viewport" tabindex="0" aria-label="Skill map. Scroll or drag to move around.">
+            <div id="map-scroll">
+              <div id="map-canvas">
+                <canvas id="map-lines" width="1100" height="404" aria-hidden="true"></canvas>
+              </div>
+            </div>
+          </div>
+          <aside class="map-detail" aria-labelledby="node-title">
+            <p class="node-type" id="node-type"></p>
+            <h3 id="node-title" aria-live="polite"></h3>
+            <p id="node-description"></p>
+            <dl>
+              <dt>Reads</dt><dd id="node-input"></dd>
+              <dt>Produces</dt><dd id="node-output"></dd>
+            </dl>
+            <a id="node-link" href="https://github.com/fhajjej-ship-it/sfc-codex">Open source on GitHub <span aria-hidden="true">↗</span></a>
+          </aside>
+        </div>
+        <p class="map-legend"><span>Workflow handoff</span><span>Optional path or tool</span></p>
+      </div>
+      <noscript><p><a href="https://github.com/fhajjej-ship-it/sfc-codex/tree/main/skills">Browse the SFC skills on GitHub</a>.</p></noscript>
+    </section>
+
+    <section class="explorer-section" id="board-demo" aria-labelledby="board-demo-title">
+      <div class="section-heading">
+        <h2 id="board-demo-title">Run an example ticket</h2>
+        <p>Step through a simulated GitHub Project. Try a clean run, a QA repair, or a blocker that needs you.</p>
+      </div>
+      <div class="demo" id="demo" hidden>
+        <div class="demo-tools">
+          <label>Scenario
+            <select id="scenario">
+              <option value="clean">Routine change</option>
+              <option value="repair">QA finds a bug</option>
+              <option value="blocked">Needs a decision</option>
+            </select>
+          </label>
+          <div class="demo-actions" aria-label="Playback controls">
+            <button type="button" id="play-demo">Play</button>
+            <button type="button" id="back-demo" aria-label="Previous step">←</button>
+            <button type="button" id="next-demo">Next step</button>
+            <button type="button" id="reset-demo">Reset</button>
+          </div>
+        </div>
+        <div class="demo-board" id="demo-board" aria-label="Simulated GitHub Project board"></div>
+        <div class="demo-evidence">
+          <div>
+            <p id="demo-progress"></p>
+            <h3 id="demo-stage"></h3>
+            <p id="demo-detail" aria-live="polite"></p>
+          </div>
+          <ol id="demo-timeline" aria-label="Run history"></ol>
+        </div>
+      </div>
+      <noscript><p><a href="https://github.com/fhajjej-ship-it/sfc-codex#how-it-works">Read how the SFC workflow works</a>.</p></noscript>
+    </section>
+
     <section class="install" id="install" aria-labelledby="install-title">
       <div class="install-intro">
         <h2 id="install-title">Install in Codex</h2>
@@ -82,6 +161,7 @@
       <div class="install-foot">
         <p>Reopen Codex, review the SFC hooks, then onboard the GitHub Project you want to use.</p>
         <a href="https://github.com/fhajjej-ship-it/sfc-codex#quick-start">Read the setup guide</a>
+        <a href="https://github.com/fhajjej-ship-it/sfc-codex/releases/download/@TAG@/sfc-@VERSION@.zip">Download the ZIP</a>
       </div>
     </section>
   </main>
@@ -89,7 +169,8 @@
     <span>Software Factory Codex</span>
     <nav aria-label="Project links">
       <a href="https://github.com/fhajjej-ship-it/sfc-codex/releases">Releases</a>
-      <a href="https://github.com/fhajjej-ship-it/sfc-codex/issues/new/choose">Share feedback</a>
+      <a href="https://github.com/fhajjej-ship-it/sfc-codex/issues">GitHub Issues</a>
+      <a href="https://github.com/fhajjej-ship-it/sfc-codex/issues/new/choose">Open an issue (GitHub sign-in)</a>
       <a href="https://github.com/fhajjej-ship-it/sfc-codex/blob/main/CONTRIBUTING.md">Contribute</a>
     </nav>
   </footer>

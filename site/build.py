@@ -18,7 +18,7 @@ def main():
     template = (source / 'index.html').read_text(encoding='utf-8')
     html = template.replace('@TAG@', args.tag).replace('@VERSION@', args.tag.removeprefix('v'))
     (args.output / 'index.html').write_text(html, encoding='utf-8')
-    for name in ('styles.css', 'site.js'):
+    for name in ('styles.css', 'site.js', 'explorer.css', 'explorer.js'):
         copyfile(source / name, args.output / name)
     copyfile(source.parent / 'assets/sfc-app-icon.png', args.output / 'sfc-app-icon.png')
 

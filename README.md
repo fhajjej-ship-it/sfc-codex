@@ -14,6 +14,8 @@
 <a href="#install-in-one-command">Install</a> ·
 <a href="#quick-start">Quick start</a> ·
 <a href="#how-it-works">Workflow</a> ·
+<a href="https://fhajjej-ship-it.github.io/sfc-codex/#skill-map">Skill map</a> ·
+<a href="https://fhajjej-ship-it.github.io/sfc-codex/#board-demo">Board demo</a> ·
 <a href="https://github.com/fhajjej-ship-it/sfc-codex/releases/latest">Releases</a> ·
 <a href="https://github.com/fhajjej-ship-it/sfc-codex/issues/new/choose">Share feedback</a>
 </p>
