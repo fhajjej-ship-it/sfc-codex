@@ -344,16 +344,53 @@
     cards.set(key, card);
   }
 
+  function visibleBounds(card) {
+    const bounds = card.getBoundingClientRect();
+    const list = card.parentElement.getBoundingClientRect();
+    return bounds.top >= list.top && bounds.bottom <= list.bottom + 1 ? bounds : null;
+  }
+
+  function animateCardMove(card, before, after, boardBounds) {
+    const dx = before.left - after.left;
+    const dy = before.top - after.top;
+    if (!dx && !dy) return;
+
+    // Draw over the board so movement between scrollable lanes stays visible.
+    const moving = card.cloneNode(true);
+    moving.className = 'demo-card-motion';
+    delete moving.dataset.ticket;
+    moving.inert = true;
+    moving.setAttribute('aria-hidden', 'true');
+    const colors = getComputedStyle(card);
+    for (const property of ['--lane', '--lane-bg']) {
+      moving.style.setProperty(property, colors.getPropertyValue(property));
+    }
+    Object.assign(moving.style, {
+      left: (after.left - boardBounds.left) + 'px',
+      top: (after.top - boardBounds.top) + 'px',
+      width: after.width + 'px',
+    });
+    board.append(moving);
+    const timing = { duration: 420, easing: 'ease-out' };
+    card.animate([{ opacity: 0 }, { opacity: 0 }], timing);
+    const motion = moving.animate([
+      { transform: 'translate(' + dx + 'px, ' + dy + 'px)' }, { transform: 'none' },
+    ], timing);
+    motion.finished.then(() => moving.remove(), () => moving.remove());
+  }
+
   function showFrame(target, fromPlayback = true) {
     index = target;
     holdEnd = true;
     const state = snapshots[index];
     const positions = new Map();
+    for (const moving of board.querySelectorAll('.demo-card-motion')) moving.remove();
     if (!motion.matches) {
       for (const [key, card] of cards) {
         if (card.isConnected) {
-          positions.set(key, card.getBoundingClientRect());
           for (const animation of card.getAnimations()) animation.cancel();
+          const bounds = visibleBounds(card);
+          if (bounds) positions.set(key, bounds);
         }
       }
     }
@@ -370,15 +407,11 @@
       count.textContent = totals.get(name);
       lane.classList.toggle('active', totals.get(name) > 0);
     }
+    const boardBounds = board.getBoundingClientRect();
     for (const [key, before] of positions) {
       const card = cards.get(key);
-      const after = card.getBoundingClientRect();
-      const dx = before.left - after.left;
-      const dy = before.top - after.top;
-      if (dx || dy) {
-        card.animate([{ transform: 'translate(' + dx + 'px, ' + dy + 'px)' }, { transform: 'none' }],
-          { duration: 420, easing: 'ease-out' });
-      }
+      const after = visibleBounds(card);
+      if (after) animateCardMove(card, before, after, boardBounds);
     }
 
     const active = totals.get('Building') + totals.get('QA') + totals.get('Review');
