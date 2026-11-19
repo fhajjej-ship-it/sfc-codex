@@ -98,6 +98,13 @@ code { font: .93rem/1.56 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .copy-status:empty { display: none; }
 .install-foot { display: flex; justify-content: space-between; align-items: baseline; gap: .8rem 1.4rem; flex-wrap: wrap; margin-top: 1.1rem; font-size: .93rem; }
 .install-foot a { color: var(--accent); font-weight: 700; }
+.answers { margin-top: clamp(3rem, 8vw, 6.5rem); scroll-margin-top: 1.5rem; }
+.answers h2 { font-size: clamp(2rem, 4.4vw, 3.3rem); line-height: 1.1; letter-spacing: -.055em; }
+.answers dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; margin: 1.3rem 0 0; }
+.answers dl div { padding: 1.2rem; background: var(--surface); border: 1px solid var(--line); border-radius: .75rem; }
+.answers dt { font-size: 1rem; font-weight: 750; line-height: 1.4; }
+.answers dd { margin: .52rem 0 0; color: var(--muted); line-height: 1.55; }
+.answers a { color: var(--accent); }
 .footer { margin-top: 3rem; padding-block: 1.5rem; border-top: 1px solid var(--line); display: flex; justify-content: space-between; flex-wrap: wrap; gap: .8rem 1.7rem; color: var(--muted); font-size: .9rem; }
 
 @media (max-width: 750px) {
@@ -106,6 +113,7 @@ code { font: .93rem/1.56 ui-monospace, SFMono-Regular, Menlo, monospace; }
   .hero { grid-template-columns: 1fr; padding-block: 3rem 2.3rem; }
   h1 { font-size: clamp(2.8rem, 10.5vw, 4.5rem); }
   .install-intro { grid-template-columns: 1fr; gap: .65rem; }
+  .answers dl { grid-template-columns: 1fr; }
 }
 @media (max-width: 360px) {
   nav { gap: .57rem; }

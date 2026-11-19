@@ -3,9 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="SFC turns GitHub Project issues into tested, reviewed pull requests in Codex.">
+  <meta name="description" content="Software Factory Codex is an open-source Codex plugin for GitHub Projects. Turn scoped issues into tested, independently reviewed pull requests.">
   <meta name="theme-color" content="#0c1513">
-  <title>SFC · Software Factory Codex</title>
+  <title>SFC · Open-source Codex plugin for GitHub Projects</title>
+  <link rel="canonical" href="https://fhajjej-ship-it.github.io/sfc-codex/">
   <link rel="icon" href="../assets/sfc-app-icon.png" type="image/png">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="explorer.css">
@@ -164,6 +165,23 @@
         <a href="https://github.com/fhajjej-ship-it/sfc-codex#quick-start">Read the setup guide</a>
         <a href="https://github.com/fhajjej-ship-it/sfc-codex/releases/download/@TAG@/sfc-@VERSION@.zip">Download the ZIP</a>
       </div>
+    </section>
+    <section class="answers" id="questions" aria-labelledby="questions-title">
+      <h2 id="questions-title">Common questions</h2>
+      <dl>
+        <div>
+          <dt>What do I need to use SFC?</dt>
+          <dd>Use macOS or Linux with Python 3.10+, Git, and signed-in Codex and GitHub CLIs. Your GitHub account needs access to the repository and its GitHub Project. <a href="#install">Follow the install steps</a>.</dd>
+        </div>
+        <div>
+          <dt>Who controls what gets merged?</dt>
+          <dd>You can merge reviewed pull requests yourself or authorize SFC to merge eligible ones. SFC checks the current candidate and required evidence before it merges.</dd>
+        </div>
+        <div>
+          <dt>What happens when QA finds a problem?</dt>
+          <dd>SFC can repair eligible findings on the same pull request and repeat the affected checks. A ticket that needs a human decision can wait in Blocked while other eligible tickets continue.</dd>
+        </div>
+      </dl>
     </section>
   </main>
   <footer class="wrap footer">
