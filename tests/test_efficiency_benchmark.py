@@ -259,7 +259,7 @@ class QualificationTests(unittest.TestCase):
         with patch.object(bench.subprocess, 'check_output', side_effect=subprocess.CalledProcessError(1, 'git')) as run:
             with self.assertRaisesRegex(Halt, '--baseline-repository'):
                 bench.compare(self.root, output, baseline_repository=baseline)
-        self.assertEqual(run.call_args.kwargs['cwd'], baseline)
+        self.assertEqual(run.call_args.kwargs['cwd'], baseline.resolve())
         self.assertFalse(output.exists())
 
     def test_current_snapshot_preserves_required_worker_schemas(self):
