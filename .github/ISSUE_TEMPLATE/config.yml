@@ -1,0 +1,4 @@
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/fhajjej-ship-it/sfc-codex/security/advisories/new
+    about: Share suspected security vulnerabilities privately with the SFC maintainers.
