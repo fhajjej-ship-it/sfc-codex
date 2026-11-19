@@ -1,0 +1,24 @@
+name: Product feedback
+description: Tell us what you were trying to do with SFC and what would help.
+body:
+  - type: markdown
+    attributes:
+      value: This creates a public GitHub issue. Share only details you are comfortable posting publicly.
+  - type: textarea
+    id: goal
+    attributes:
+      label: What were you trying to do?
+    validations:
+      required: true
+  - type: textarea
+    id: friction
+    attributes:
+      label: Where did you get stuck?
+      description: Include the step that caused friction and any workaround you tried.
+    validations:
+      required: true
+  - type: textarea
+    id: improvement
+    attributes:
+      label: What would have made it easier?
+      description: Redact any private repository details or credentials.

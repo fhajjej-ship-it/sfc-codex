@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="SFC turns GitHub Project issues into tested, reviewed pull requests in Codex.">
+  <meta name="theme-color" content="#f5f9f3">
+  <title>SFC · Software Factory Codex</title>
+  <link rel="icon" href="sfc-app-icon.png" type="image/png">
+  <link rel="stylesheet" href="styles.css">
+  <script src="site.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="topbar wrap">
+    <a class="brand" href="./" aria-label="SFC homepage">
+      <img src="sfc-app-icon.png" alt="" width="42" height="42">
+      <span>SFC</span>
+    </a>
+    <nav aria-label="Main navigation">
+      <a href="#workflow">Workflow</a>
+      <a href="#install">Install</a>
+      <a class="nav-source" href="https://github.com/fhajjej-ship-it/sfc-codex">GitHub</a>
+    </nav>
+  </header>
+
+  <main class="wrap" id="main">
+    <section class="hero" aria-labelledby="title">
+      <div class="hero-copy">
+        <p class="project-name">Software Factory Codex</p>
+        <h1 id="title">From GitHub issue to reviewed pull request.</h1>
+        <p class="lead">Give Codex a scoped issue with acceptance criteria. SFC builds it in an isolated worktree, runs your checks, and brings you a pull request with independent review.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#install">Install SFC</a>
+          <a class="button secondary" href="https://github.com/fhajjej-ship-it/sfc-codex">View source</a>
+        </div>
+        <a class="release-link" href="https://github.com/fhajjej-ship-it/sfc-codex/releases/tag/@TAG@">@TAG@</a>
+        <span class="license">MIT licensed</span>
+      </div>
+
+      <section id="workflow" class="workflow" aria-labelledby="workflow-title">
+        <div class="board-top">
+          <img src="sfc-app-icon.png" alt="" width="72" height="72">
+          <div>
+            <p class="board-label">Example workflow</p>
+            <h2 id="workflow-title">Add CSV export</h2>
+          </div>
+        </div>
+        <ol class="steps">
+          <li>
+            <span class="step-marker" aria-hidden="true"></span>
+            <div><h3>Ready</h3><p>Scope the issue on your GitHub Project.</p></div>
+          </li>
+          <li>
+            <span class="step-marker" aria-hidden="true"></span>
+            <div><h3>Build</h3><p>Codex implements it in an isolated worktree.</p></div>
+          </li>
+          <li>
+            <span class="step-marker" aria-hidden="true"></span>
+            <div><h3>QA, Security, and Review</h3><p>Project checks and independent reviews verify the change.</p></div>
+          </li>
+          <li class="step-last">
+            <span class="step-marker" aria-hidden="true"></span>
+            <div><h3>Reviewed pull request</h3><p>You choose whether SFC can merge it.</p></div>
+          </li>
+        </ol>
+      </section>
+    </section>
+    <section class="install" id="install" aria-labelledby="install-title">
+      <div class="install-intro">
+        <h2 id="install-title">Install in Codex</h2>
+        <p>Use macOS or Linux with Python 3.10+, Git, and authenticated Codex and GitHub CLIs. Stop an active SFC watcher before upgrading.</p>
+      </div>
+      <div class="terminal">
+        <div class="terminal-bar">
+          <span>Terminal</span>
+          <button type="button" id="copy-install" hidden>Copy command</button>
+        </div>
+        <pre><code id="install-command">curl -fsSLo sfc-install.py https://raw.githubusercontent.com/fhajjej-ship-it/sfc-codex/@TAG@/scripts/install_release.py &amp;&amp; python3 sfc-install.py --version @VERSION@</code></pre>
+        <p id="copy-status" class="copy-status" role="status"></p>
+      </div>
+      <div class="install-foot">
+        <p>Reopen Codex, review the SFC hooks, then onboard the GitHub Project you want to use.</p>
+        <a href="https://github.com/fhajjej-ship-it/sfc-codex#quick-start">Read the setup guide</a>
+      </div>
+    </section>
+  </main>
+  <footer class="wrap footer">
+    <span>Software Factory Codex</span>
+    <nav aria-label="Project links">
+      <a href="https://github.com/fhajjej-ship-it/sfc-codex/releases">Releases</a>
+      <a href="https://github.com/fhajjej-ship-it/sfc-codex/issues/new/choose">Share feedback</a>
+      <a href="https://github.com/fhajjej-ship-it/sfc-codex/blob/main/CONTRIBUTING.md">Contribute</a>
+    </nav>
+  </footer>
+</body>
+</html>

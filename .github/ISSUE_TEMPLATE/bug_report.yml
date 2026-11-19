@@ -1,0 +1,23 @@
+name: Bug report
+description: Report a problem with SFC installation, onboarding, or a workflow.
+body:
+  - type: input
+    id: versions
+    attributes:
+      label: SFC version, Codex version, and operating system
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Share the smallest sequence that reproduces the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed results
+      description: Redact credentials and private repository details from any logs.
+    validations:
+      required: true

@@ -1,18 +1,33 @@
-# SFC
+<div align="center">
 
-<img src="assets/sfc-logo.png" alt="SFC — Software Factory Codex: a factory with code chevrons" width="96" height="96">
+<img src="assets/sfc-app-icon.png" alt="SFC factory and code chevrons on a teal app icon" width="112" height="112">
 
-**Turn GitHub Project issues into tested, reviewed pull requests in Codex.**
+<h1>SFC</h1>
 
-SFC stands for **Software Factory Codex**. Give it a GitHub Project issue with
-acceptance criteria. SFC implements the change in an isolated Git worktree,
-runs your project's checks, and uses independent QA, Security, and Review
-before a merge. You choose which work it can pick up and whether it can merge.
+<p><strong>Turn GitHub Project issues into tested, reviewed pull requests in Codex.</strong></p>
+
+<p>Software Factory Codex builds in isolated worktrees, runs your project checks, and prepares a pull request with independent review.</p>
+
+<p><strong><a href="https://fhajjej-ship-it.github.io/sfc-codex/">Open the SFC website</a></strong></p>
+
+<p>
+<a href="#install-in-one-command">Install</a> ·
+<a href="#quick-start">Quick start</a> ·
+<a href="#how-it-works">Workflow</a> ·
+<a href="https://github.com/fhajjej-ship-it/sfc-codex/releases/latest">Releases</a> ·
+<a href="https://github.com/fhajjej-ship-it/sfc-codex/issues/new/choose">Share feedback</a>
+</p>
+
+</div>
+
+```mermaid
+flowchart LR
+    A["Ready issue"] --> B["Build in a worktree"]
+    B --> C["Run checks and review"]
+    C --> D["Reviewed pull request"]
+```
 
 SFC **0.1.39** is the first public release. Install it as a local Codex plugin.
-
-[Latest release](https://github.com/fhajjej-ship-it/sfc-codex/releases/latest) ·
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Support](#support)
 
 ## Install in one command
 
@@ -272,9 +287,12 @@ For current evidence and its limits, see the
 
 ## Support
 
-Open a [GitHub issue](https://github.com/fhajjej-ship-it/sfc-codex/issues/new) for installation or workflow help. Include your SFC and Codex versions, operating system, and the step where you
+Open a [GitHub issue](https://github.com/fhajjej-ship-it/sfc-codex/issues/new/choose) for
+installation or workflow help. Include your SFC and Codex versions, operating system, and the step where you
 got stuck. Remove credentials and private repository details from any logs you
 share.
+
+See the [contribution guide](https://github.com/fhajjej-ship-it/sfc-codex/blob/main/CONTRIBUTING.md) for testing and proposing changes.
 
 SFC is available under the [MIT License](LICENSE).
 

@@ -6,6 +6,13 @@ during 0.1.12 development and is included in the current plugin package.
 
 ![SFC logo preview at small sizes on light and dark backgrounds](assets/sfc-logo-preview.png)
 
+## Website icon
+
+The [homepage icon](../assets/sfc-app-icon.png) also appears at the top of the
+GitHub README. The ImageGen edit kept the three factory roof peaks and central
+code chevrons, with a pale mint inlay on a rounded evergreen-teal tile. The
+512-pixel PNG retains its transparent corners.
+
 ## Reusable assets
 
 | File | Purpose |
