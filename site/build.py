@@ -16,7 +16,9 @@ def main():
     source = Path(__file__).resolve().parent
     args.output.mkdir(parents=True, exist_ok=False)
     template = (source / 'index.html').read_text(encoding='utf-8')
-    html = template.replace('@TAG@', args.tag).replace('@VERSION@', args.tag.removeprefix('v'))
+    html = (template.replace('@TAG@', args.tag)
+            .replace('@VERSION@', args.tag.removeprefix('v'))
+            .replace('../assets/sfc-app-icon.png', 'sfc-app-icon.png'))
     (args.output / 'index.html').write_text(html, encoding='utf-8')
     for name in ('styles.css', 'site.js', 'explorer.css', 'explorer.js'):
         copyfile(source / name, args.output / name)

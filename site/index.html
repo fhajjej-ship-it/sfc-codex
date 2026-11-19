@@ -6,7 +6,7 @@
   <meta name="description" content="SFC turns GitHub Project issues into tested, reviewed pull requests in Codex.">
   <meta name="theme-color" content="#f5f9f3">
   <title>SFC · Software Factory Codex</title>
-  <link rel="icon" href="sfc-app-icon.png" type="image/png">
+  <link rel="icon" href="../assets/sfc-app-icon.png" type="image/png">
   <link rel="stylesheet" href="styles.css">
   <link rel="stylesheet" href="explorer.css">
   <script src="site.js" defer></script>
@@ -14,9 +14,9 @@
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
-  <header class="topbar wrap">
-    <a class="brand" href="./" aria-label="SFC homepage">
-      <img src="sfc-app-icon.png" alt="" width="42" height="42">
+  <header class="topbar wrap" id="top">
+    <a class="brand" href="#top" aria-label="SFC homepage">
+      <img src="../assets/sfc-app-icon.png" alt="" width="42" height="42">
       <span>SFC</span>
     </a>
     <nav aria-label="Main navigation">
@@ -43,7 +43,7 @@
 
       <section id="workflow" class="workflow" aria-labelledby="workflow-title">
         <div class="board-top">
-          <img src="sfc-app-icon.png" alt="" width="72" height="72">
+          <img src="../assets/sfc-app-icon.png" alt="" width="72" height="72">
           <div>
             <p class="board-label">Example workflow</p>
             <h2 id="workflow-title">Add CSV export</h2>
@@ -73,12 +73,13 @@
     <section class="explorer-section" id="skill-map" aria-labelledby="skill-map-title">
       <div class="section-heading">
         <h2 id="skill-map-title">Explore the skill map</h2>
-        <p>Follow an issue through SFC. Select a step to see what it reads, what it produces, and which skill runs it.</p>
+        <p>Watch a ticket move from issue to release. Select any step to inspect its inputs, outputs, and source.</p>
       </div>
       <div class="map" id="map" hidden>
         <div class="map-tools">
           <label class="map-search"><span>Find a skill</span><input type="search" id="map-search" placeholder="Search skills or stages" autocomplete="off"></label>
           <div class="map-actions" aria-label="Map view controls">
+            <button type="button" id="play-map">Pause tour</button>
             <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
             <output id="zoom-level">100%</output>
             <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
@@ -113,18 +114,15 @@
 
     <section class="explorer-section" id="board-demo" aria-labelledby="board-demo-title">
       <div class="section-heading">
-        <h2 id="board-demo-title">Run an example ticket</h2>
-        <p>Step through a simulated GitHub Project. Try a clean run, a QA repair, or a blocker that needs you.</p>
+        <h2 id="board-demo-title">Watch tickets run together</h2>
+        <p>See how SFC runs several tickets through the same board. Select a card to see its checks, repairs, or blocker.</p>
       </div>
       <div class="demo" id="demo" hidden>
         <div class="demo-tools">
-          <label>Scenario
-            <select id="scenario">
-              <option value="clean">Routine change</option>
-              <option value="repair">QA finds a bug</option>
-              <option value="blocked">Needs a decision</option>
-            </select>
-          </label>
+          <div>
+            <p class="demo-caption">Simulated GitHub Project</p>
+            <p id="demo-summary"></p>
+          </div>
           <div class="demo-actions" aria-label="Playback controls">
             <button type="button" id="play-demo">Play</button>
             <button type="button" id="back-demo" aria-label="Previous step">←</button>
@@ -135,11 +133,14 @@
         <div class="demo-board" id="demo-board" aria-label="Simulated GitHub Project board"></div>
         <div class="demo-evidence">
           <div>
-            <p id="demo-progress"></p>
+            <p id="demo-ticket"></p>
             <h3 id="demo-stage"></h3>
             <p id="demo-detail" aria-live="polite"></p>
           </div>
-          <ol id="demo-timeline" aria-label="Run history"></ol>
+          <div>
+            <p id="demo-progress"></p>
+            <ol id="demo-timeline" aria-label="Board timeline"></ol>
+          </div>
         </div>
       </div>
       <noscript><p><a href="https://github.com/fhajjej-ship-it/sfc-codex#how-it-works">Read how the SFC workflow works</a>.</p></noscript>

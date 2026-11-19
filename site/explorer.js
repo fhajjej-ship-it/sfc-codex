@@ -1,12 +1,47 @@
 (() => {
   const get = (id) => document.getElementById(id);
+  const motion = matchMedia('(prefers-reduced-motion: reduce)');
+
+  function playInView(container, control, name, interval, advance) {
+    let enabled = !motion.matches;
+    let visible = false;
+    let timer = null;
+
+    function sync() {
+      const playing = enabled && visible && !document.hidden;
+      if (playing && timer === null) timer = setInterval(advance, interval);
+      if (!playing && timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+      control.textContent = (enabled ? 'Pause ' : 'Play ') + name;
+      container.dataset.playing = String(playing);
+    }
+
+    function pause() {
+      enabled = false;
+      sync();
+    }
+
+    const observer = new IntersectionObserver(([entry]) => {
+      visible = entry.isIntersecting && entry.intersectionRatio >= .15;
+      sync();
+    }, { threshold: .15 });
+    observer.observe(container);
+    document.addEventListener('visibilitychange', sync);
+    motion.addEventListener('change', () => { if (motion.matches) pause(); });
+    control.addEventListener('click', () => { enabled = !enabled; sync(); });
+    sync();
+    return pause;
+  }
+
   const source = 'https://github.com/fhajjej-ship-it/sfc-codex/blob/main/';
   const design = 'docs/DESIGN.md';
   const skill = (name) => 'skills/' + name + '/SKILL.md';
   const nodes = {
     collect: [36, 52, 'Collect feedback', 'On demand', 'sfc-collect', 'Collect and verify reports before shaping a work ticket.', 'Public reports and optional connected sources.', 'Evidence and proposed tickets for triage.', skill('sfc-collect')],
     issue: [36, 166, 'GitHub issue', 'Input', 'Ready', 'Scope the work with acceptance criteria and make it eligible on the project board.', 'User outcome and acceptance criteria.', 'An eligible issue on your GitHub Project.', design],
-    watch: [214, 166, 'Supervisor', 'Coordinator', 'sfc', 'Claim eligible tickets, schedule work, and check evidence before changing GitHub state.', 'Issue, project policy, and saved run state.', 'A worktree and pinned candidate for the next lane.', skill('sfc')],
+    watch: [214, 166, 'Supervisor', 'Coordinator', 'sfc', 'Schedule eligible tickets across concurrent slots and check evidence before changing GitHub state.', 'Eligible issues, project policy, and saved run state.', 'An isolated worktree and pinned candidate for each active ticket.', skill('sfc')],
     build: [392, 166, 'Build', 'Factory lane', 'sfc-build', 'Implement the issue in a separate worktree and prepare the candidate for verification.', 'Issue scope and previous findings.', 'A candidate change for project checks.', skill('sfc-build')],
     checks: [570, 166, 'Project checks', 'Verification', 'test evidence', 'Run configured checks and reuse valid results when their inputs and policy match.', 'Candidate source and configured check commands.', 'Passing receipts or actionable failures.', 'docs/VERIFICATION-REUSE.md'],
     qa: [570, 52, 'QA', 'Factory lane', 'sfc-qa', 'Independently assess the candidate against every acceptance criterion.', 'Candidate and project-check receipts.', 'Acceptance evidence or precise findings.', skill('sfc-qa')],
@@ -30,8 +65,14 @@
   const width = drawing.width;
   const height = drawing.height;
   const buttons = new Map();
+  const tour = ['issue', 'watch', 'build', 'checks', 'qa', 'security', 'review', 'merge', 'release'];
   let zoom = 1;
   let selected = 'issue';
+  let tourIndex = 0;
+  const pauseTour = playInView(map, get('play-map'), 'tour', 2400, () => {
+    tourIndex = (tourIndex + 1) % tour.length;
+    selectNode(tour[tourIndex], 'tour');
+  });
 
   function zoomTo(value, keepCenter = true) {
     const centerX = (viewport.scrollLeft + viewport.clientWidth / 2) / zoom;
@@ -53,23 +94,26 @@
     zoomTo(Math.min(1, viewport.clientWidth / width, viewport.clientHeight / height), false);
   }
 
-  function selectNode(key, reveal = false) {
+  function selectNode(key, reveal = null) {
     const [, , title, type, command, description, input, output, path] = nodes[key];
     buttons.get(selected).setAttribute('aria-pressed', 'false');
     const node = buttons.get(key);
     node.setAttribute('aria-pressed', 'true');
     selected = key;
     get('node-type').textContent = type + ' · ' + command;
-    get('node-title').textContent = title;
+    const heading = get('node-title');
+    heading.setAttribute('aria-live', reveal === 'tour' ? 'off' : 'polite');
+    heading.textContent = title;
     get('node-description').textContent = description;
     get('node-input').textContent = input;
     get('node-output').textContent = output;
     get('node-link').href = source + path;
-    if (reveal) {
-      node.focus({ preventScroll: true });
+    if (reveal === 'search') node.focus({ preventScroll: true });
+    if (reveal && viewport.scrollWidth > viewport.clientWidth) {
       const [x, y] = nodes[key];
       viewport.scrollTo({ left: (x + 72) * zoom - viewport.clientWidth / 2,
-        top: (y + 36) * zoom - viewport.clientHeight / 2 });
+        top: (y + 36) * zoom - viewport.clientHeight / 2,
+        behavior: reveal === 'tour' && !motion.matches ? 'smooth' : 'instant' });
     }
   }
 
@@ -87,7 +131,7 @@
     const label = document.createElement('span');
     label.textContent = command;
     node.append(name, label);
-    node.addEventListener('click', () => selectNode(key));
+    node.addEventListener('click', () => { pauseTour(); selectNode(key); });
     scene.append(node);
     buttons.set(key, node);
   }
@@ -142,15 +186,18 @@
       : 'Select a node to explore.';
     return matches;
   }
+  search.addEventListener('focus', pauseTour);
   search.addEventListener('input', searchMap);
   search.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
     const [first] = searchMap();
-    if (first) selectNode(first, true);
+    if (first) selectNode(first, 'search');
   });
-  get('zoom-out').addEventListener('click', () => zoomTo(zoom - .15));
-  get('zoom-in').addEventListener('click', () => zoomTo(zoom + .15));
-  get('fit-map').addEventListener('click', fitMap);
+  get('zoom-out').addEventListener('click', () => { pauseTour(); zoomTo(zoom - .15); });
+  get('zoom-in').addEventListener('click', () => { pauseTour(); zoomTo(zoom + .15); });
+  get('fit-map').addEventListener('click', () => { pauseTour(); fitMap(); });
+  viewport.addEventListener('keydown', pauseTour);
+  viewport.addEventListener('wheel', pauseTour, { passive: true });
   const fullscreen = get('expand-map');
   if (document.fullscreenEnabled) {
     fullscreen.hidden = false;
@@ -170,6 +217,7 @@
 
   let drag;
   viewport.addEventListener('pointerdown', (event) => {
+    pauseTour();
     const onScrollbar = event.target === viewport &&
       (event.offsetX >= viewport.clientWidth || event.offsetY >= viewport.clientHeight);
     if (event.pointerType !== 'mouse' || event.button !== 0 || event.target.closest('button') || onScrollbar) return;
@@ -190,115 +238,178 @@
   selectNode(selected);
   fitMap();
 
-  const ready = ['Ready', 'Issue ready', 'The issue has acceptance criteria and is eligible for pickup.'];
-  const building = ['Building', 'Worktree created', 'The supervisor assigns the ticket and Codex implements the change in an isolated worktree.'];
-  const qa = ['QA', 'Project checks and QA', 'SFC records the configured test results. QA checks acceptance criteria and Security examines relevant risks.'];
-  const review = ['Review', 'Independent review', 'The reviewer checks the candidate and completed evidence at the same commit.'];
-  const done = ['Done', 'Verified merge', 'With merge authority, SFC verifies the current candidate and required checks, merges the PR, and marks the ticket Done.'];
-  const scenarios = {
-    clean: [ready, building, qa, review, done],
-    repair: [ready, building, qa,
-      ['QA', 'QA finds an edge case', 'The exported CSV drops quoted commas. QA records the finding against the current candidate.'],
-      ['Building', 'Same PR repaired', 'An eligible repair updates the same PR within its attempt budget.'],
-      ['QA', 'Affected checks revalidated', 'SFC runs affected checks and reuses passing evidence only where its inputs still match.'],
-      review, done],
-    blocked: [ready, building,
-      ['Blocked', 'Maintainer decision needed', 'The ticket requires a product decision about export permissions. It waits here for a human response while other eligible tickets can continue.']],
+  const titles = {
+    export: 'Add CSV export',
+    retry: 'Retry failed sync',
+    access: 'Set export permissions',
+    keyboard: 'Improve keyboard navigation',
+    guide: 'Update the workspace guide',
   };
-  const lanes = new Map();
+  const queued = ['Ready', 'Ready for pickup', 'The issue has acceptance criteria and is eligible for pickup.'];
+  const building = ['Building', 'Worktree created', 'Codex implements the ticket in an isolated worktree.'];
+  const qa = ['QA', 'Project checks and QA', 'Configured checks produce test evidence. QA verifies acceptance criteria and Security checks relevant risks.'];
+  const review = ['Review', 'Independent review', 'The reviewer checks the candidate and completed evidence at the same commit.'];
+  const merged = ['Done', 'Verified merge', 'The supervisor confirms the required checks and review evidence, then merges the authorized PR.'];
+
+  const frames = [
+    ['Queue ready', {
+      export: queued, retry: queued, access: queued, keyboard: queued,
+      guide: ['Backlog', 'Needs refinement', 'The guide stays in Backlog while its scope is prepared.'],
+    }],
+    ['Two builds start', { export: building, retry: building }],
+    ['Checks start', { export: qa, retry: qa, access: building }],
+    ['Finding and blocker', {
+      export: ['QA', 'QA finds an edge case', 'A quoted comma breaks CSV output. QA records the finding on the current candidate.'],
+      retry: review,
+      access: ['Blocked', 'Maintainer decision needed', 'The export permission policy needs a human decision. Other tickets continue.'],
+    }],
+    ['Repair and merge', {
+      export: ['Building', 'Same PR repaired', 'Codex fixes the CSV edge case on the same PR within its repair budget.'],
+      retry: merged,
+      keyboard: building,
+    }],
+    ['Parallel checks', {
+      export: ['QA', 'Affected checks revalidated', 'SFC reruns affected checks and reuses passing evidence where the inputs still match.'],
+      keyboard: qa,
+    }],
+    ['Parallel review', { export: review, keyboard: review }],
+    ['CSV export merged', { export: merged }],
+    ['Keyboard change merged', { keyboard: merged }],
+  ];
+  const snapshots = [];
+  let snapshot = {};
+  for (const [, updates] of frames) {
+    snapshot = { ...snapshot, ...updates };
+    snapshots.push(snapshot);
+  }
+
+  const demo = get('demo');
   const board = get('demo-board');
+  const lanes = new Map();
   for (const name of ['Backlog', 'Ready', 'Building', 'QA', 'Review', 'Done', 'Blocked']) {
     const lane = document.createElement('section');
     lane.className = 'demo-lane';
     lane.dataset.lane = name;
-    const label = document.createElement('h3');
-    label.textContent = name;
-    lane.append(label);
+    const title = document.createElement('h3');
+    const count = document.createElement('span');
+    title.textContent = name;
+    title.append(count);
+    const list = document.createElement('div');
+    list.className = 'demo-cards';
+    lane.append(title, list);
     board.append(lane);
-    lanes.set(name, lane);
+    lanes.set(name, { lane, list, count });
   }
-  const card = document.createElement('div');
-  card.className = 'demo-card';
-  card.textContent = 'Add CSV export';
-  const scenario = get('scenario');
-  const play = get('play-demo');
-  const back = get('back-demo');
-  const next = get('next-demo');
+
+  const cards = new Map();
   const timeline = get('demo-timeline');
-  const motion = matchMedia('(prefers-reduced-motion: reduce)');
-  let steps = scenarios.clean;
+  const previous = get('back-demo');
+  const next = get('next-demo');
   let index = 0;
-  let timer = null;
+  let selectedTicket = 'export';
+  let holdEnd = true;
 
-  function pause() {
-    clearInterval(timer);
-    timer = null;
-    play.textContent = 'Play';
+  const pauseDemo = playInView(demo, get('play-demo'), 'demo', 1900, () => {
+    if (index === frames.length - 1 && holdEnd) {
+      holdEnd = false;
+      return;
+    }
+    showFrame((index + 1) % frames.length);
+  });
+
+  function inspectTicket(fromPlayback) {
+    const [lane, heading, detail] = snapshots[index][selectedTicket];
+    get('demo-ticket').textContent = titles[selectedTicket] + ' · ' + lane;
+    get('demo-stage').textContent = heading;
+    const description = get('demo-detail');
+    description.setAttribute('aria-live', fromPlayback ? 'off' : 'polite');
+    description.textContent = detail;
+    for (const [key, card] of cards) card.setAttribute('aria-pressed', String(key === selectedTicket));
   }
 
-  function showStep(target) {
+  for (const [key, title] of Object.entries(titles)) {
+    const card = document.createElement('button');
+    card.type = 'button';
+    card.className = 'demo-card';
+    card.dataset.ticket = key;
+    card.setAttribute('aria-controls', 'demo-stage demo-detail');
+    const name = document.createElement('strong');
+    name.textContent = title;
+    card.append(name, document.createElement('span'));
+    card.addEventListener('click', () => {
+      pauseDemo();
+      selectedTicket = key;
+      inspectTicket(false);
+    });
+    cards.set(key, card);
+  }
+
+  function showFrame(target, fromPlayback = true) {
     index = target;
-    const [stage, label, description] = steps[index];
-    const lane = lanes.get(stage);
-    const before = card.parentElement ? card.getBoundingClientRect() : null;
-    for (const item of lanes.values()) item.classList.toggle('active', item === lane);
-    lane.append(card);
-    if (before && !motion.matches) {
-      const after = card.getBoundingClientRect();
-      if (before.left !== after.left || before.top !== after.top) {
-        for (const animation of card.getAnimations()) animation.cancel();
-        card.animate([{ transform: 'translate(' + (before.left - after.left) + 'px, ' +
-          (before.top - after.top) + 'px)' }, { transform: 'none' }], { duration: 280, easing: 'ease-out' });
+    holdEnd = true;
+    const state = snapshots[index];
+    const positions = new Map();
+    if (!motion.matches) {
+      for (const [key, card] of cards) {
+        if (card.isConnected) {
+          positions.set(key, card.getBoundingClientRect());
+          for (const animation of card.getAnimations()) animation.cancel();
+        }
       }
     }
-    get('demo-progress').textContent = 'Step ' + (index + 1) + ' of ' + steps.length;
-    get('demo-stage').textContent = label;
-    get('demo-detail').textContent = description;
+
+    const totals = new Map([...lanes.keys()].map((lane) => [lane, 0]));
+    for (const [key, card] of cards) {
+      const [name, title] = state[key];
+      const { list } = lanes.get(name);
+      if (card.parentElement !== list) list.append(card);
+      card.lastElementChild.textContent = title;
+      totals.set(name, totals.get(name) + 1);
+    }
+    for (const [name, { lane, count }] of lanes) {
+      count.textContent = totals.get(name);
+      lane.classList.toggle('active', totals.get(name) > 0);
+    }
+    for (const [key, before] of positions) {
+      const card = cards.get(key);
+      const after = card.getBoundingClientRect();
+      const dx = before.left - after.left;
+      const dy = before.top - after.top;
+      if (dx || dy) {
+        card.animate([{ transform: 'translate(' + dx + 'px, ' + dy + 'px)' }, { transform: 'none' }],
+          { duration: 420, easing: 'ease-out' });
+      }
+    }
+
+    const active = totals.get('Building') + totals.get('QA') + totals.get('Review');
+    get('demo-summary').textContent = active + ' active · ' + totals.get('Done') + ' merged · ' + totals.get('Blocked') + ' blocked';
+    get('demo-progress').textContent = 'Step ' + (index + 1) + ' of ' + frames.length;
     for (const [position, item] of [...timeline.children].entries()) {
       item.firstElementChild.setAttribute('aria-current', position === index ? 'step' : 'false');
     }
-    back.disabled = index === 0;
-    next.disabled = index === steps.length - 1;
-    if (next.disabled) {
-      pause();
-      play.textContent = 'Replay';
-    } else if (timer === null) {
-      play.textContent = 'Play';
-    }
+    previous.disabled = index === 0;
+    next.disabled = index === frames.length - 1;
+    inspectTicket(fromPlayback);
   }
 
-  function chooseScenario() {
-    pause();
-    steps = scenarios[scenario.value];
-    timeline.replaceChildren();
-    for (const [position, [, label]] of steps.entries()) {
-      const item = document.createElement('li');
-      const step = document.createElement('button');
-      step.type = 'button';
-      step.textContent = label;
-      step.addEventListener('click', () => {
-        pause();
-        showStep(position);
-      });
-      item.append(step);
-      timeline.append(item);
-    }
-    showStep(0);
+  function seek(target) {
+    pauseDemo();
+    showFrame(target, false);
   }
 
-  scenario.addEventListener('change', chooseScenario);
-  play.addEventListener('click', () => {
-    if (timer !== null) {
-      pause();
-      return;
-    }
-    if (index === steps.length - 1) showStep(0);
-    play.textContent = 'Pause';
-    timer = setInterval(() => showStep(index + 1), 1800);
-  });
-  back.addEventListener('click', () => { pause(); showStep(index - 1); });
-  next.addEventListener('click', () => { pause(); showStep(index + 1); });
-  get('reset-demo').addEventListener('click', () => { pause(); showStep(0); });
-  get('demo').hidden = false;
-  chooseScenario();
+  for (const [position, [label]] of frames.entries()) {
+    const item = document.createElement('li');
+    const step = document.createElement('button');
+    step.type = 'button';
+    step.textContent = label;
+    step.addEventListener('click', () => seek(position));
+    item.append(step);
+    timeline.append(item);
+  }
+
+  previous.addEventListener('click', () => seek(index - 1));
+  next.addEventListener('click', () => seek(index + 1));
+  get('reset-demo').addEventListener('click', () => seek(0));
+  demo.hidden = false;
+  showFrame(0);
 })();
