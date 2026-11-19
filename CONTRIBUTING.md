@@ -7,15 +7,20 @@ Use [GitHub Issues](https://github.com/fhajjej-ship-it/sfc-codex/issues) to
 report bugs or propose changes.
 
 Keep a pull request focused on one change and describe how you verified it.
-Run the checks from the repository root.
+GitHub runs **Tests and plugin validation** on pull requests targeting `main`.
+Open the pull request's **Checks** tab to see the result. A first-time
+contributor's workflow may wait for maintainer approval.
+
+Run the same checks locally from the repository root.
 
 ```sh
 python3 tests/run_suite.py
 python3 scripts/validate_plugin.py
 ```
 
-Tests use temporary repositories and fake GitHub and Codex adapters. For
-historical benchmarks, see the
+Tests use temporary repositories and fake GitHub and Codex adapters.
+The historical comparison requires a separate pinned checkout and is skipped
+in the public PR workflow. See the
 [qualification guide](docs/DELIVERY-QUALIFICATION.md). For changes to packaging
 or install instructions, also build and verify a ZIP using the
 [distribution guide](docs/DISTRIBUTION.md).
