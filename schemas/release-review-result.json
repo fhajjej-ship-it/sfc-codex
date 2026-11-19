@@ -1,0 +1,36 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["verdict", "summary", "findings", "evidence", "release_qa"],
+  "properties": {
+    "verdict": {"type": "string", "enum": ["pass", "fail", "blocked"]},
+    "summary": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["file", "line", "severity", "message"],
+        "properties": {
+          "file": {"type": "string"},
+          "line": {"type": "integer"},
+          "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+          "message": {"type": "string"}
+        }
+      }
+    },
+    "evidence": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "release_qa": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inspection_sha256", "verification_bindings_sha256", "artifact_evidence", "installation_evidence", "acceptance_evidence"],
+      "properties": {
+        "inspection_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "verification_bindings_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "artifact_evidence": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "installation_evidence": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "acceptance_evidence": {"type": "string", "minLength": 1, "pattern": "\\S"}
+      }
+    }
+  }
+}

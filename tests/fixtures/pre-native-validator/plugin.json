@@ -1,0 +1,38 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "sfc",
+  "version": "0.1.15-dev.4",
+  "description": "A Codex-only software factory: GitHub Project issues to verified pull requests through Build, QA, security and review.",
+  "author": {
+    "name": "Farouk Hajjej"
+  },
+  "repository": "https://github.com/example/sfc",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "software-factory",
+    "github-projects",
+    "qa"
+  ],
+  "extensions": {
+    "com.openai": {
+      "hooks": "./hooks/hooks.json",
+      "interface": {
+        "displayName": "SFC",
+        "shortDescription": "A software factory built exclusively for Codex.",
+        "longDescription": "Run GitHub Project issues through isolated builds, independent QA, PR security checks and review, with saved evidence and controlled merging.",
+        "developerName": "Farouk Hajjej",
+        "category": "Developer Tools",
+        "brandColor": "#145C54",
+        "logo": "./assets/sfc-logo.png",
+        "composerIcon": "./assets/sfc-icon.png",
+        "defaultPrompt": [
+          "Use SFC to onboard this repository.",
+          "Use SFC to show the factory status.",
+          "Use SFC to run the ready issues in this project."
+        ]
+      },
+      "mcpServers": "./.mcp.json"
+    }
+  }
+}

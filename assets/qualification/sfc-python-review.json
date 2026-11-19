@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "evaluation": "paired-real-model-focused-upstream",
+  "upstream_base": "0c9a1749c6a273e21f9412d70c93b6a131007e62",
+  "policy": {
+    "mode": "risk-based",
+    "providers": {
+      "review": "codex-native"
+    },
+    "behavioral_contract": {
+      "paths": [
+        "scripts/sfc_lib/ticket_validation.py"
+      ],
+      "check_ids": [
+        1
+      ],
+      "instructions": {
+        "AGENTS.md": "07799313d51499c864d04aece7cd4dce90bb3c801aeb96c3eb6a92cb22e7840b"
+      }
+    }
+  },
+  "profile_sha256": "7f2013ce12d61cbebe6f3a37025911484b2c4582f8d9a7cab5114b51cacdd78a",
+  "runtime_sha256": "5553be90d326a05df3624996f386a128748e88a4ebcd2af910608b5c0f10c9e8",
+  "cli": {
+    "version": "codex-cli 0.167.0",
+    "sha256": "030316ecfbb41f4e7946e584b0063ef333b7a36cd312ba349f2f6869e39b62cc",
+    "provider_sha256": "2f040cd996c02abbd8c437453a7021adcd8f1bceb646625a8929d20a96ce515c"
+  },
+  "criteria_sha256": "911201133d16475b01cab7acc7850b76978c98398ee806148df9aa6b86fb4e86",
+  "report_sha256": "2846eee27f015c5e8cbeee345c219fc759fe0e7483b6e95b1ea83e6c6446b831",
+  "adjudication_sha256": "3d2f21751daea354df4cbf5627f442318e8eafc6d628034a572d8164e3dad4be",
+  "full_activation_sha256": "e77bb7d1b89b5eea30e8787124875e3259d187a241aba5e2213d9ecb4e6e8963",
+  "metrics": {
+    "retained_cases": 1,
+    "seeded_cases": 1,
+    "clean_cases": 2,
+    "detection_recall": 1.0,
+    "acceptance_coverage": 1.0,
+    "baseline_false_positives": 0,
+    "candidate_false_positives": 0,
+    "median_review_ratio": 0.8145966666781584,
+    "median_end_to_end_ratio": 0.8232374494448033,
+    "max_clean_end_to_end_ratio": 0.7631451726756223
+  }
+}

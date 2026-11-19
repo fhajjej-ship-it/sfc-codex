@@ -1,0 +1,4 @@
+interface:
+  display_name: "SFC QA"
+  short_description: "Verify behavior and test gaps"
+  default_prompt: "Use $sfc:sfc-qa for this task."

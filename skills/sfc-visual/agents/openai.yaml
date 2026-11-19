@@ -1,0 +1,4 @@
+interface:
+  display_name: "SFC Visual"
+  short_description: "Create a local visual recap, plan or map"
+  default_prompt: "Use $sfc:sfc-visual for this task."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SFC Review"
+  short_description: "Review correctness and supporting evidence"
+  default_prompt: "Use $sfc:sfc-review for this task."

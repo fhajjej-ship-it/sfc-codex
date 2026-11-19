@@ -1,0 +1,4 @@
+interface:
+  display_name: "SFC Security"
+  short_description: "Review factory changes and release artifacts"
+  default_prompt: "Use $sfc:sfc-security for this task."

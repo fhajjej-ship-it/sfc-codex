@@ -1,0 +1,118 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/guard.py\" --attachment",
+            "timeout": 5,
+            "statusMessage": "Requesting native SFC session attachment"
+          }
+        ],
+        "matcher": "^(startup|resume)$"
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/guard.py\" --session",
+            "statusMessage": "Checking SFC factory context"
+          }
+        ]
+      },
+      {
+        "matcher": "^(startup|resume)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/guard.py\" --autostart",
+            "async": true,
+            "timeout": 86760,
+            "statusMessage": "Checking authorized SFC auto-start"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "sfc_session",
+            "tool": "session_attach_hook",
+            "input": {
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "hook_event_name": "${hook_event_name}",
+              "permission_mode": "${permission_mode}",
+              "source": "${source}"
+            },
+            "timeout": 5,
+            "statusMessage": "Attaching authorized SFC session observation"
+          }
+        ],
+        "matcher": "^(startup|resume)$"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/guard.py\"",
+            "statusMessage": "Checking SFC command guards"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${PLUGIN_ROOT}/hooks/guard.py\" --attachment",
+            "timeout": 5,
+            "statusMessage": "Requesting native SFC session attachment"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "sfc_session",
+            "tool": "session_attach_hook",
+            "input": {
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "hook_event_name": "${hook_event_name}",
+              "permission_mode": "${permission_mode}",
+              "turn_id": "${turn_id}"
+            },
+            "timeout": 5,
+            "statusMessage": "Attaching authorized SFC session observation"
+          }
+        ]
+      }
+    ],
+    "PreModelRequest": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "sfc_session",
+            "tool": "session_attach",
+            "input": {
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "hook_event_name": "${hook_event_name}",
+              "turn_id": "${turn_id}"
+            },
+            "timeout": 5,
+            "statusMessage": "Checking SFC session attachment readiness"
+          }
+        ]
+      }
+    ]
+  }
+}

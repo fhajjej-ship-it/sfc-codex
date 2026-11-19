@@ -1,0 +1,4 @@
+interface:
+  display_name: "SFC"
+  short_description: "Run the Codex software factory"
+  default_prompt: "Use $sfc:sfc for this task."

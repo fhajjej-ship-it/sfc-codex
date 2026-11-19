@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "sfc_session": {
+      "command": "python3",
+      "args": [
+        "-B",
+        "${PLUGIN_ROOT}/scripts/session_mcp.py"
+      ],
+      "env_vars": [
+        "SFC_WORKER",
+        "SFC_TEST_CONTEXT"
+      ]
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "source_commit": "4c83ecb45b83c9a537aef6924185d6df30e2f823",
+  "source_version": "0.1.15-dev.4",
+  "scope": "Exact prior-version preflight-relevant source files. Remaining test package support comes from the test fixture, not a claim of a complete prior release archive.",
+  "files": {
+    "plugin.json": "289e38ff650a90b1c7876813fcb6ebfbc9de3c6e61728582f2461e94f02847fa",
+    ".codex-plugin/plugin.json": "9bb0d57636a21c846823e1aa040dd4f408e3542a8017dc3f202b1923ea5bb685",
+    ".mcp.json": "aac9d43fcbbd1ea8e86ca5c82f756b78882c8b763cc2949b2dc7c4d1dd4e04a1",
+    "hooks/hooks.json": "4f3917ca9bff52303754d98028bab9b366fbf3cce6f79d68d85323668cf96d5f",
+    "scripts/validate_plugin.py": "966d3b258e82b052cc15d88c94929725f275336ba90c40321c4253e474599a5b",
+    "scripts/sfc_lib/__init__.py": "d018fd8302077ccd84c611ac49d3dad8033a3c0259361a7f2049c79e21bcddd6"
+  },
+  "public_fixture_note": "Only the repository URL in the manifest fixtures is anonymized. The validator source is byte-for-byte unchanged."
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "SFC Build"
+  short_description: "Implement a selected factory issue"
+  default_prompt: "Use $sfc:sfc-build for this task."

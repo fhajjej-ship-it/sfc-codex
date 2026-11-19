@@ -1,0 +1,25 @@
+{
+  "name": "sfc",
+  "version": "0.1.39",
+  "description": "A Codex-only software factory: GitHub Project issues to verified pull requests.",
+  "author": {
+    "name": "Farouk Hajjej"
+  },
+  "repository": "https://github.com/fhajjej-ship-it/sfc-codex",
+  "license": "MIT",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
+  "interface": {
+    "displayName": "SFC",
+    "shortDescription": "A software factory built exclusively for Codex.",
+    "developerName": "Farouk Hajjej",
+    "category": "Developer Tools",
+    "brandColor": "#145C54",
+    "logo": "./assets/sfc-logo.png",
+    "composerIcon": "./assets/sfc-icon.png",
+    "defaultPrompt": [
+      "Use SFC to onboard this repository."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

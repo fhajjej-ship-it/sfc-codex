@@ -1,0 +1,4 @@
+interface:
+  display_name: "SFC UI Refine"
+  short_description: "Refine and visually verify a selected UI"
+  default_prompt: "Use $sfc:sfc-ui-refine for this task."

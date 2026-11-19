@@ -1,0 +1,10 @@
+{
+  "name": "sfc-local",
+  "interface": {"displayName": "SFC"},
+  "plugins": [{
+    "name": "sfc",
+    "source": {"source": "local", "path": "./"},
+    "policy": {"installation": "AVAILABLE", "authentication": "ON_INSTALL"},
+    "category": "Developer Tools"
+  }]
+}

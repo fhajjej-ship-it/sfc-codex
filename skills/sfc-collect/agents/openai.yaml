@@ -1,0 +1,4 @@
+interface:
+  display_name: "SFC Collect"
+  short_description: "Collect problems and prioritize the backlog"
+  default_prompt: "Use $sfc:sfc-collect for this task."

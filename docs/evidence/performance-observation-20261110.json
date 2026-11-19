@@ -1,0 +1,153 @@
+{
+  "date": "2026-11-10",
+  "base": "5caed6f0831574a72811496edf5f2b0a36fd63a6",
+  "scope": "read-only maintainer Project observation; 42 memberships; no worker/remote mutation",
+  "live_queue": {
+    "before": {
+      "seconds": [
+        43.14319854200039,
+        42.46325708299992
+      ],
+      "median_seconds": 42.803227812500154,
+      "calls": [
+        91,
+        91
+      ],
+      "explicit_graphql_cost_second_sample": 87,
+      "detailed_cards": 42
+    },
+    "after": {
+      "seconds": [
+        23.108025292000093,
+        22.44174720799856
+      ],
+      "median_seconds": 22.774886249999327,
+      "calls": [
+        47,
+        47
+      ],
+      "explicit_graphql_cost_second_sample": 43,
+      "detailed_cards": 20
+    }
+  },
+  "offline": {
+    "before": {
+      "transport": "fake, 2ms added per GraphQL call; not customer latency",
+      "rows": [
+        {
+          "board_issues": 1,
+          "graphql_calls": 5,
+          "seconds": 0.02129229199999827,
+          "returned": 1,
+          "active": [
+            1
+          ],
+          "writes": 0
+        },
+        {
+          "board_issues": 25,
+          "graphql_calls": 53,
+          "seconds": 0.17158308299985947,
+          "returned": 25,
+          "active": [
+            1
+          ],
+          "writes": 0
+        },
+        {
+          "board_issues": 100,
+          "graphql_calls": 203,
+          "seconds": 0.6234404589995393,
+          "returned": 100,
+          "active": [
+            1
+          ],
+          "writes": 0
+        },
+        {
+          "board_issues": 250,
+          "graphql_calls": 505,
+          "seconds": 1.5000479579994135,
+          "returned": 250,
+          "active": [
+            1
+          ],
+          "writes": 0
+        }
+      ]
+    },
+    "after": {
+      "transport": "fake, 2ms added per GraphQL request",
+      "sources_sha256": {
+        "scripts/sfc_lib/factory.py": "3b9cc1eb58d588dbac58b15e55ff6bcabf89140034209b894071677c6ab6d0fd",
+        "scripts/sfc_lib/pickup.py": "cc521f46cdd81d75307ce445327d5a6d35d00024c1c0f931a23609275df08a04",
+        "tests/test_pickup.py": "5219a4a65b7c1ec21d1d5b8d23baf8545b1d95e71a361522b08ac97dab74bbd2"
+      },
+      "rows": [
+        {
+          "board_issues": 1,
+          "graphql_calls": 5,
+          "seconds": 0.020107667000047513,
+          "active_issues": [
+            1
+          ],
+          "writes": 0
+        },
+        {
+          "board_issues": 25,
+          "graphql_calls": 5,
+          "seconds": 0.020608583001376246,
+          "active_issues": [
+            1
+          ],
+          "writes": 0
+        },
+        {
+          "board_issues": 100,
+          "graphql_calls": 5,
+          "seconds": 0.02126466600020649,
+          "active_issues": [
+            1
+          ],
+          "writes": 0
+        },
+        {
+          "board_issues": 250,
+          "graphql_calls": 7,
+          "seconds": 0.027330540999173536,
+          "active_issues": [
+            1
+          ],
+          "writes": 0
+        }
+      ]
+    }
+  },
+  "startup": {
+    "scope": "isolated SFC MCP process initialize/tools-list/status/EOF only; no attachment or worker model",
+    "seconds": [
+      0.0366995410004165,
+      0.03589366699998209,
+      0.036093750000873115,
+      0.03859054200074752,
+      0.03486900000098103
+    ],
+    "median_seconds": 0.036093750000873115,
+    "writes": 0
+  },
+  "limits": {
+    "max_workers": 2,
+    "auto_max_lines": 800
+  },
+  "runtime_source_sha256": {
+    "scripts/sfc_lib/factory.py": "3b9cc1eb58d588dbac58b15e55ff6bcabf89140034209b894071677c6ab6d0fd",
+    "scripts/sfc_lib/github.py": "a53c4de5166ee06f84479fef216eaab12473eeef96c77b50ac541b269cb0faca",
+    "scripts/sfc_lib/pickup.py": "cc521f46cdd81d75307ce445327d5a6d35d00024c1c0f931a23609275df08a04"
+  },
+  "limitations": [
+    "Two live samples per version; no full workflow speedup claim",
+    "Fake latency is not customer latency",
+    "No fresh native hook/worker acceptance or independent model review of this change",
+    "Rate-limit recovery remains unchanged"
+  ]
+}

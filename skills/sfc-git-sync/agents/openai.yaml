@@ -1,0 +1,4 @@
+interface:
+  display_name: "SFC Git Sync"
+  short_description: "Commit and synchronize selected changes"
+  default_prompt: "Use $sfc:sfc-git-sync for this task."
