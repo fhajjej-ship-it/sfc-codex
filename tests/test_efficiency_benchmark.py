@@ -250,6 +250,18 @@ class QualificationTests(unittest.TestCase):
                 bench.compare(self.root, output, worker_timeout_seconds=invalid)
             self.assertFalse(output.exists())
 
+    def test_missing_historical_checkout_explains_how_to_supply_it(self):
+        import subprocess
+
+        baseline = self.root / 'baseline-repository'
+        baseline.mkdir()
+        output = self.root / 'unused'
+        with patch.object(bench.subprocess, 'check_output', side_effect=subprocess.CalledProcessError(1, 'git')) as run:
+            with self.assertRaisesRegex(Halt, '--baseline-repository'):
+                bench.compare(self.root, output, baseline_repository=baseline)
+        self.assertEqual(run.call_args.kwargs['cwd'], baseline)
+        self.assertFalse(output.exists())
+
     def test_current_snapshot_preserves_required_worker_schemas(self):
         root = self.root / 'current'
         for folder in bench.RUNTIME_DIRS:

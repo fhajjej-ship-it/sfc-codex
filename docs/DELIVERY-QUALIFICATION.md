@@ -4,6 +4,11 @@ This release distinguishes tested control-flow improvements from measured
 customer delivery performance. The reference release is v0.1.17 at commit
 `efe380bb6ec4cdf71f4ef8c8e1d382fe72708411`.
 
+On a checkout without the historical release, supply another checkout containing
+that exact commit to `tests/benchmark_delivery.py --qualify --baseline-repository`.
+The four historical-comparison tests use `SFC_TEST_BASELINE_REPOSITORY` for
+the same purpose. A new public clone can run the rest of the suite on its own.
+
 The review-only comparison also retains the released v0.1.18 runtime at
 `2133f015195ddc237a8551184b4b1e9356373e3e`. Its percentages describe independent
 review, not complete delivery, and must not be combined with delivery timings.

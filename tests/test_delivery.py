@@ -3,6 +3,7 @@ import concurrent.futures
 from contextlib import redirect_stdout
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -480,8 +481,23 @@ class DeliveryReuseTests(unittest.TestCase):
 
 
 class DeliveryScenariosTests(unittest.TestCase):
+    def compare_historical_release(self, output, **options):
+        from sfc_lib.efficiency_benchmark import BASELINE, compare
+
+        root = Path(__file__).resolve().parents[1]
+        configured = os.getenv('SFC_TEST_BASELINE_REPOSITORY')
+        baseline_repository = Path(configured).resolve() if configured else root
+        available = subprocess.run(['git', 'cat-file', '-e', BASELINE + '^{commit}'],
+                                   cwd=baseline_repository, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL).returncode == 0
+        if not available:
+            if configured:
+                self.fail('SFC_TEST_BASELINE_REPOSITORY does not contain the pinned v0.1.17 commit')
+            self.skipTest('Requires the historical v0.1.17 checkout. Set SFC_TEST_BASELINE_REPOSITORY to run.')
+        return compare(root, output, baseline_repository=baseline_repository, **options)
+
     def test_saved_draft_route_checks_assets_and_recovers_without_publication(self):
-        from sfc_lib.efficiency_benchmark import DRAFT_BOUNDARY, compare, evaluate
+        from sfc_lib.efficiency_benchmark import DRAFT_BOUNDARY, evaluate
         from test_releases import config
         with tempfile.TemporaryDirectory() as tmp:
             folder = Path(tmp)
@@ -496,8 +512,8 @@ class DeliveryScenariosTests(unittest.TestCase):
             config_path = folder / 'project/.sfc/config.json'
             write_json(config_path, saved)
             output = folder / 'comparison'
-            result = compare(Path(__file__).resolve().parents[1], output, cases=['interrupted-release'],
-                             profile='fresh', saved_config=config_path, draft_only=True)
+            result = self.compare_historical_release(output, cases=['interrupted-release'],
+                                                     profile='fresh', saved_config=config_path, draft_only=True)
             self.assertEqual(result['completion_boundary'], DRAFT_BOUNDARY)
             pair = result['profiles']['fresh']['pairs']['interrupted-release']
             for arm in ('baseline', 'candidate'):
@@ -517,12 +533,12 @@ class DeliveryScenariosTests(unittest.TestCase):
                 evaluate(output / 'qualification-input.json')
 
     def test_normal_comparison_arms_share_release_qa_instructions(self):
-        from sfc_lib.efficiency_benchmark import compare, evaluate, reference
+        from sfc_lib.efficiency_benchmark import evaluate, reference
 
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / 'paired'
-            compare(Path(__file__).resolve().parents[1], output, cases=['ordinary-feature'], profile='fresh',
-                    worker_timeout_seconds=300)
+            self.compare_historical_release(output, cases=['ordinary-feature'], profile='fresh',
+                                            worker_timeout_seconds=300)
             paths = [output / 'runs/ordinary-feature' / arm / 'repo/AGENTS.md' for arm in ('released', 'fresh')]
             instruction = paths[0].read_bytes()
             self.assertEqual(instruction, paths[1].read_bytes())
@@ -560,11 +576,11 @@ class DeliveryScenariosTests(unittest.TestCase):
                     evaluate(manifest_path)
 
     def test_historical_worker_timeout_plan_still_evaluates(self):
-        from sfc_lib.efficiency_benchmark import compare, evaluate, reference
+        from sfc_lib.efficiency_benchmark import evaluate, reference
 
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / 'paired'
-            compare(Path(__file__).resolve().parents[1], output, cases=['security-sensitive'], profile='fresh')
+            self.compare_historical_release(output, cases=['security-sensitive'], profile='fresh')
             plan_path = output / 'comparison-plan.json'
             plan = read_json(plan_path)
             self.assertEqual(plan['worker_timeout_seconds'], 120)
@@ -576,13 +592,13 @@ class DeliveryScenariosTests(unittest.TestCase):
 
     def test_legacy_release_bindings_match_original_receipts_and_fail_on_drift(self):
         from benchmark_delivery import legacy_release_binding
-        from sfc_lib.efficiency_benchmark import compare, evaluate, reference
+        from sfc_lib.efficiency_benchmark import evaluate, reference
         from sfc_lib.releases import digest
 
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / 'paired'
-            report = compare(Path(__file__).resolve().parents[1], output, cases=['documentation-correction'],
-                             profile='fresh', legacy_release_bindings=True)
+            report = self.compare_historical_release(output, cases=['documentation-correction'],
+                                                     profile='fresh', legacy_release_bindings=True)
             self.assertIn('fixture-supplied', report['baseline_release_evidence'])
             released = output / 'runs/documentation-correction/released'
             current = released.with_name('fresh')

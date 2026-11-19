@@ -79,7 +79,7 @@ def pinned(ref):
 
 def compare(root, output, inventory=CASES, *, cases=None, baseline=None, candidate=None, profile='both',
             model_only=False, model_objective=None, worker_timeout_seconds=DEFAULT_WORKER_TIMEOUT,
-            draft_only=False, saved_config=None, legacy_release_bindings=False):
+            draft_only=False, saved_config=None, legacy_release_bindings=False, baseline_repository=None):
     """Run at most six scenarios; real runs permit only one matched profile pair."""
     validate_worker_timeout(worker_timeout_seconds)
     if tuple(inventory) != CASES or profile not in ('fresh', 'migrated', 'both'):
@@ -113,10 +113,16 @@ def compare(root, output, inventory=CASES, *, cases=None, baseline=None, candida
     if not selected or cases is not None and len(selected) != len(cases):
         raise Halt('Select known, distinct, bounded delivery scenarios')
     root, output = Path(root).resolve(), Path(output).resolve()
+    baseline_root = root if baseline_repository is None else Path(baseline_repository).resolve()
+    try:
+        archive = subprocess.check_output(['git', 'archive', '--format=zip', BASELINE],
+                                          cwd=baseline_root, stderr=subprocess.PIPE, timeout=30)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise Halt('The pinned v0.1.17 source is unavailable. Supply a checkout containing it with '
+                   '--baseline-repository.') from exc
     output.mkdir(parents=True, exist_ok=False)
     started = time.monotonic()
     released, current = output / 'runtime-released', output / 'runtime-current'
-    archive = subprocess.check_output(['git', 'archive', '--format=zip', BASELINE], cwd=root, timeout=30)
     archive_path = output / 'released-source.zip'
     archive_path.write_bytes(archive)
     with zipfile.ZipFile(io.BytesIO(archive)) as source:

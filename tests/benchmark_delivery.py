@@ -770,6 +770,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--baseline-model-config', type=Path)
+    parser.add_argument('--baseline-repository', type=Path,
+                        help='Local checkout containing the pinned v0.1.17 source for --qualify')
     parser.add_argument('--candidate-model-config', type=Path)
     parser.add_argument('--case', action='append', choices=[c['name'] for c in CASES])
     parser.add_argument('--qualify', action='store_true', help='Compare the pinned v0.1.17 runtime with current profiles')
@@ -793,6 +795,8 @@ if __name__ == '__main__':
     args = parser.parse_args()
     if args.worker_timeout_seconds is not None and (not args.qualify or args.fixture_arm):
         parser.error('--worker-timeout-seconds requires --qualify')
+    if args.baseline_repository is not None and (not args.qualify or args.fixture_arm):
+        parser.error('--baseline-repository requires --qualify')
     baseline = read_json(args.baseline_model_config) if args.baseline_model_config else None
     candidate = read_json(args.candidate_model_config) if args.candidate_model_config else None
     if args.fixture_arm:
@@ -818,6 +822,7 @@ if __name__ == '__main__':
                                  model_only=args.model_only, model_objective=args.model_objective, draft_only=args.draft_only,
                                  saved_config=args.saved_config,
                                  legacy_release_bindings=args.legacy_release_bindings,
+                                 baseline_repository=args.baseline_repository,
                                  worker_timeout_seconds=(DEFAULT_WORKER_TIMEOUT if args.worker_timeout_seconds is None
                                                          else args.worker_timeout_seconds)), indent=2))
     else:
