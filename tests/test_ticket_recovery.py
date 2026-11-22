@@ -201,6 +201,88 @@ class RetainedRecoveryTests(unittest.TestCase):
                                   overrides={'poll_interval': 1, 'max_polls': 3,
                                              'max_seconds': 60, 'max_claims': 10})
 
+    def automatic_watch(self, execute, probes=None):
+        self.c['watch'] = {'recover_builds': True}
+        if probes:
+            self.c['watch']['build_prerequisite_probes'] = probes
+        self.gh = PickupGitHub(self.root, [ticket()])
+        self.factory = Factory(self.root, self.c, self.gh, self.proc)
+        clock = Clock()
+        clock.active = lambda: bool(self.factory.occupied)
+        with patch.object(self.proc, 'execute', side_effect=execute):
+            self.factory.watch(start=True, clock=clock, wait=clock.wait,
+                               overrides={'poll_interval': 1, 'max_polls': 8, 'max_seconds': 60})
+        return self.factory.state['cards']['1']
+
+    def test_watcher_recovers_owned_interrupted_build_once_and_reviews(self):
+        original = self.proc.execute
+        attempts = 0
+
+        def execute(argv, cwd, log, *args, **kwargs):
+            nonlocal attempts
+            if argv[:2] == ['codex', 'exec'] and 'workspace-write' in argv:
+                attempts += 1
+                retained = Path(cwd, 'retained.txt')
+                if attempts == 1:
+                    retained.write_text('Preserve this partial change\n')
+                    Path(log).write_text('Owned interrupted Build\n')
+                    raise TimedOut('First Build timed out')
+                self.assertEqual(retained.read_text(), 'Preserve this partial change\n')
+            return original(argv, cwd, log, *args, **kwargs)
+
+        record = self.automatic_watch(execute)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(record['ticket_recoveries'][0]['kind'], 'timeout')
+        self.assertEqual(record['ticket_recoveries'][0]['status'], 'spent')
+        self.assertEqual(len(record['recovered_ticket_failures']), 1)
+        self.assertEqual(self.proc.lanes, ['build', 'qa', 'security', 'review'])
+        self.assertEqual(record['activity']['action'], 'human')
+        self.assertEqual(self.gh.merges, [])
+
+    def test_expended_automatic_build_does_not_launch_one_more_worker(self):
+        attempts = []
+
+        def execute(argv, cwd, log, *args, **kwargs):
+            attempts.append(argv[:2])
+            Path(log).write_text('Owned interrupted Build\n')
+            raise TimedOut('Build timed out')
+
+        record = self.automatic_watch(execute)
+        self.assertEqual(attempts, [['codex', 'exec'], ['codex', 'exec']])
+        self.assertEqual(record['activity']['action'], 'timeout')
+        self.assertEqual(len(record['ticket_recoveries']), 1)
+
+    def test_watcher_waits_for_project_probe_and_reuses_the_retained_build(self):
+        original = self.proc.execute
+        setups, probes = [], []
+
+        def execute(argv, cwd, log, *args, **kwargs):
+            if argv[:2] == ['codex', 'sandbox']:
+                self.assertEqual(argv[2:], ['-P', ':workspace', '-c', 'approval_policy="never"',
+                                             '-C', str(cwd), '--', 'test', '-f', 'ready'])
+                Path(log).parent.mkdir(parents=True, exist_ok=True)
+                Path(log).write_text('Prerequisite probe\n')
+                probes.append(str(cwd))
+                return 1 if len(probes) == 1 else 0
+            code = original(argv, cwd, log, *args, **kwargs)
+            if argv[:2] == ['codex', 'exec'] and 'workspace-write' in argv:
+                setups.append(str(cwd))
+                if len(setups) == 1:
+                    path = Path(argv[argv.index('--output-last-message') + 1])
+                    write_json(path, {**read_json(path), 'verdict': 'blocked'})
+                else:
+                    self.assertEqual(len(probes), 2)
+            return code
+
+        record = self.automatic_watch(execute, {'1': ['test', '-f', 'ready']})
+        self.assertEqual(setups, probes)
+        grant = record['ticket_recoveries'][0]
+        self.assertEqual(grant['kind'], 'worker-blocked')
+        self.assertEqual(grant['automatic']['probe']['exit_code'], 0)
+        self.assertEqual(grant['status'], 'spent')
+        self.assertEqual(record['activity']['action'], 'human')
+        self.assertEqual(self.gh.merges, [])
+
     def test_timeout_retains_dirty_untracked_work_and_old_spending_then_watcher_runs_all_lanes(self):
         self.timed_out()
         before = self.factory.state_path.read_bytes()

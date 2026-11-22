@@ -1,15 +1,11 @@
-"""Explicit one-Build recovery of retained execution failures and prerequisites.
-
-This is operator authority for one identified failure, including watcher pickup;
-ordinary watching never creates or renews it. Original spending stays intact.
-"""
+"""One-Build recovery grants for retained work. Original spending stays intact."""
 from pathlib import Path
 import hashlib
 import json
 import re
 
 from . import pickup
-from .common import Halt, common_dir, git, now, read_json, write_json, run
+from .common import Halt, Stopped, TimedOut, common_dir, git, now, read_json, write_json, run
 from .worker_recovery import digest
 
 CHECK_FAILURE = {'verdict': 'fail', 'summary': 'Project verification commands failed; inspect the recorded logs'}
@@ -248,15 +244,26 @@ def grant(f, *, issue, request_id, reason, grant_one=False):
         kind = 'worker-blocked'
     else:
         raise Halt('No supported retained execution failure for recovery')
+    return authorize(f, card, binding, kind, request_id, reason, grant_one=grant_one)
+
+
+def authorize(f, card, binding, kind, request_id, reason, *, grant_one, automatic=None):
+    r = f.record(card)
+    if pending(r):
+        raise Halt('An unspent ticket recovery already exists')
+    builds = r.get('worker_output_budget', {}).get('build', {}).get('dispatches', [])
+    last = builds[-1] if builds else {}
     failure = digest({'binding': binding, 'kind': kind})
     failure_key = digest({'claim': binding['claim'], 'kind': kind,
-                          'receipt': failed_checks(f, card, binding['head'])[0] if checks else last.get('result_path')})
+                          'receipt': failed_checks(f, card, binding['head'])[0] if kind == 'checks' else last.get('result_path')})
     if any(g['failure_id'] == failure or g.get('failure_key') == failure_key for g in r.get('ticket_recoveries', [])):
         raise Halt('This failure already received its recovery Build')
     g = {'version': 1, 'request_id': request_id, 'reason': reason.strip(), 'status': 'available',
          'additional_builds': 1, 'authorized_at': now(), 'failure_id': failure,
          'failure_key': failure_key, 'kind': kind,
          'origin_stage': card['status'], 'binding': binding}
+    if automatic:
+        g['automatic'] = automatic
     if not grant_one:
         return {'state': 'preview', 'grant': g, 'writes': False}
     path = f.dir / 'recoveries' / (request_id + '.json')
@@ -265,10 +272,160 @@ def grant(f, *, issue, request_id, reason, grant_one=False):
     write_json(path, {'state': 'intent', 'grant': g})
     r.setdefault('ticket_recoveries', []).append(g)
     f.save()
-    if read_json(f.state_path)['cards'][str(issue)]['ticket_recoveries'][-1] != g:
+    if read_json(f.state_path)['cards'][str(card['number'])]['ticket_recoveries'][-1] != g:
         raise Halt('Recovery grant readback differs')
     write_json(path, {'state': 'granted', 'grant': g})
     return {'state': 'granted', 'grant': g, 'writes': True}
+
+
+def automatic_eligibility(f, card):
+    watcher = f.watcher
+    if not watcher or not watcher.settings.get('recover_builds'):
+        return False, None
+    policy = (watcher.session or {}).get('policy') if watcher.session else watcher.policy()
+    if not policy or policy.get('recover_builds') is not True:
+        return False, None
+    r = f.state['cards'].get(str(card['number']), {})
+    action = r.get('activity', {}).get('action')
+    probe = watcher.settings.get('build_prerequisite_probes', {}).get(str(card['number']))
+    if not (action == 'timeout' or action == 'worker_blocked' and probe):
+        return False, None
+    if (card['status'] != 'Blocked' or r.get('status') != 'Blocked' or card['state'] != 'OPEN' or
+            card['number'] not in f.issue_scope or watcher.excludes(card) or r.get('pr') or
+            r.get('workflow_kind') == 'release' or 'qa' in card['labels'] or r.get('handoff') or
+            r.get('qa_repair') or r.get('corrective_builds') or r.get('worker_output_recovery')):
+        return False, None
+    grants = r.get('ticket_recoveries', [])
+    if any(g.get('automatic') for g in grants) or len(r.get('blocked_recoveries', [])) >= watcher.settings.get('max_recoveries_per_ticket', 0):
+        return False, 'Automatic retained Build allowance exhausted'
+    if grants:
+        return False, 'Prior retained Build recovery requires inspection'
+    if r.get('recovery_wait'):
+        return False, r['recovery_wait']
+    from .blocked_recovery import waiting_on_read
+    if waiting_on_read(watcher, card):
+        return False, 'Waiting for GitHub before rechecking retained work'
+    retry = r.get('build_prerequisite_probe', {})
+    if retry.get('retry_at', 0) > watcher.clock():
+        return False, 'Waiting for the configured Build prerequisite to pass'
+    return True, None
+
+
+def verify_automatic_failure(f, card, binding):
+    r = f.record(card)
+    last = r.get('worker_output_budget', {}).get('build', {}).get('dispatches', [])[-1]
+    result_path = Path(last['result_path'])
+    raw = result_path.parent / 'dispatch.json'
+    reserved = {**last, 'status': 'reserved'}
+    reserved.pop('window', None)
+    if (raw.is_symlink() or not raw.is_file() or read_json(raw) != reserved or
+            last.get('lane') != 'build' or any(last.get(k) != value for k, value in (
+                ('head', binding['head']), ('base', binding['base']), ('worktree', binding['worktree']),
+                ('task_digest', binding['task']), ('config_digest', binding['config'])))):
+        raise Halt('Automatic Build requires the exact retained dispatch')
+    failure = r.get('ticket_failure')
+    if failure and failure.get('action') == 'timeout':
+        if (not failure or failure.get('phase') != 'blocked' or failure.get('action') != 'timeout' or
+                failure.get('interrupted_lane') != 'build' or
+                last.get('status') not in ('reserved', 'window-interrupted') or result_path.exists()):
+            raise Halt('Automatic Build requires an interrupted Build without a result')
+        receipt = Path(failure['receipt'])
+        if (receipt.is_symlink() or not receipt.resolve().is_relative_to((f.dir / 'runs').resolve()) or
+                read_json(receipt) != {k: v for k, v in failure.items() if k != 'receipt'} or
+                failure.get('worker_output_budget') != r['worker_output_budget']):
+            raise Halt('Automatic Build requires intact supervisor interruption evidence')
+        return 'timeout'
+    result = read_json(result_path)
+    receipt = read_json(result_path.parent / 'receipt.json')
+    if (last.get('status') != 'accepted' or result.get('verdict') != 'blocked' or
+            result != json.loads(r['feedback']) or receipt.get('result') != result or
+            any(receipt.get(k) != last.get(k) for k in ('head', 'base', 'task_digest', 'config_digest'))):
+        raise Halt('Automatic Build requires intact accepted prerequisite evidence')
+    return 'worker-blocked'
+
+
+def probe_prerequisite(f, card, binding):
+    watcher = f.watcher
+    command = watcher.settings['build_prerequisite_probes'][str(card['number'])]
+    folder = f.run_dir / f"issue-{card['number']}" / ('build-probe-' + f.record(card)['dispatch']['id'])
+    log = folder / 'probe.log'
+    argv = ['codex', 'sandbox', '-P', ':workspace', '-c', 'approval_policy="never"',
+            '-C', binding['worktree'], '--', *command]
+    try:
+        code = f.execute(card, 'checks', argv, Path(binding['worktree']), log, min(30, f.c['verify_timeout']))
+    except TimedOut:
+        code = None
+    proof = {'log': str(log), 'exit_code': code, 'time': now(), 'session': watcher.session['id'],
+             'retry_at': watcher.clock() + watcher.settings['poll_interval']}
+    if log.is_file():
+        proof['sha256'] = hashlib.sha256(log.read_bytes()).hexdigest()
+    f.update(card, build_prerequisite_probe=proof)
+    return proof if code == 0 and proof.get('sha256') else None
+
+
+def automatic_admit(f, card):
+    from .blocked_recovery import ready_for_action
+    from .rate_limit import ReadConnectionReset
+
+    if not automatic_eligibility(f, card)[0]:
+        return False
+    drift = 'Automatic Build recovery could not verify retained evidence or authority'
+    scope = card['_pickup_scope']
+    if not ready_for_action(f, card, scope, drift):
+        return False
+    try:
+        r = f.record(card)
+        if r['claim']['observed'].get('_pickup_scope') != scope:
+            raise Halt('Retained claim scope changed')
+        binding = snapshot(f, card)
+        if binding['live_base'] != binding['base']:
+            raise Halt('Automatic Build base changed')
+        kind = verify_automatic_failure(f, card, binding)
+        probe = probe_prerequisite(f, card, binding) if kind == 'worker-blocked' else None
+        if kind == 'worker-blocked' and not probe:
+            return False
+        if snapshot(f, card) != binding or verify_automatic_failure(f, card, binding) != kind:
+            raise Halt('Automatic Build evidence changed after prerequisite verification')
+    except Stopped:
+        raise
+    except ReadConnectionReset:
+        from .blocked_recovery import defer_read
+        defer_read(f.watcher, card)
+        return False
+    except (Halt, KeyError, IndexError, ValueError, OSError):
+        f.update(card, recovery_wait=drift)
+        return False
+    if not ready_for_action(f, card, scope, drift):
+        return False
+    automatic = {'session': f.watcher.session['id'], 'scope': scope, 'probe': probe}
+    request = 'auto-build-' + digest({'claim': binding['claim'], 'kind': kind})[:32]
+    g = authorize(f, card, binding, kind, request, 'Saved watcher Build recovery policy',
+                  grant_one=True, automatic=automatic)['grant']
+    admit_card(f, card, g)
+    return True
+
+
+def automatic_authorized(f, card, grant):
+    authority = grant.get('automatic')
+    if not authority:
+        return True
+    watcher = f.watcher
+    if (not watcher or not watcher.session or authority['session'] != watcher.session['id'] or
+            watcher.session['policy'].get('recover_builds') is not True or watcher.excludes(card) or
+            authority['scope'] != card.get('_pickup_scope')):
+        return False
+    proof = authority.get('probe')
+    if grant['kind'] == 'worker-blocked' and not proof:
+        raise Halt('Retained Build prerequisite proof is missing')
+    if proof:
+        log = Path(proof['log'])
+        if (proof.get('exit_code') != 0 or log.is_symlink() or
+                not log.resolve().is_relative_to((f.dir / 'runs').resolve()) or not log.is_file() or
+                hashlib.sha256(log.read_bytes()).hexdigest() != proof.get('sha256')):
+            raise Halt('Retained prerequisite probe evidence changed; no Build dispatched')
+    if verify_automatic_failure(f, card, grant['binding']) != grant['kind']:
+        raise Halt('Retained Build failure changed; no Build dispatched')
+    return True
 
 
 def permits(f, card, r):
@@ -282,7 +439,7 @@ def permits(f, card, r):
     if g['binding']['config'] != f.config_digest or g['binding']['task'] != f.task_digest(card):
         return False
     if card['status'] == 'Building':
-        return g['status'] == 'available'
+        return g['status'] == 'available' and automatic_authorized(f, card, g)
     if card['status'] not in ('QA', 'Review') or g['status'] != 'spent':
         return False
     dispatches = r.get('worker_output_budget', {}).get('build', {}).get('dispatches', [])
@@ -308,26 +465,31 @@ def admit(f, cards):
         checked = True
         if len(grants) != 1:
             raise Halt('Ambiguous ticket recovery grants')
-        g = grants[0]
-        journal(f, g)
-        prior = r.get('ticket_recovery_admission', {})
-        if prior.get('request_id') == g['request_id'] and prior.get('phase') != 'verified':
-            raise Halt('Unresolved recovery admission; no write retry')
-        if snapshot(f, card) != g['binding']:
-            raise Halt('Recovery pins/evidence changed; no worker launched')
-        if prior.get('request_id') == g['request_id']:
-            continue
-        r['ticket_recovery_admission'] = {'request_id': g['request_id'], 'phase': 'intent'}
-        f.save()
-        f.ensure_running()
-        if card['status'] == 'Blocked':
-            f.move(card, 'Building', 'Explicit retained-work recovery authorized')
-        live = pickup.cards(f.gh, [card['number']])
-        if len(live) != 1 or live[0] != card:
-            raise Halt('Recovery admission readback differs; no retry')
-        r['ticket_recovery_admission']['phase'] = 'verified'
-        f.save()
+        admit_card(f, card, grants[0])
     return checked
+
+
+def admit_card(f, card, g):
+    r = f.record(card)
+    journal(f, g)
+    prior = r.get('ticket_recovery_admission', {})
+    if prior.get('request_id') == g['request_id'] and prior.get('phase') != 'verified':
+        raise Halt('Unresolved recovery admission; no write retry')
+    if not automatic_authorized(f, card, g) or snapshot(f, card) != g['binding']:
+        raise Halt('Recovery pins/evidence changed; no worker launched')
+    if prior.get('request_id') == g['request_id']:
+        return
+    r['ticket_recovery_admission'] = {'request_id': g['request_id'], 'phase': 'intent'}
+    f.save()
+    f.ensure_running()
+    if card['status'] == 'Blocked':
+        detail = 'Watcher verified retained Build recovery' if g.get('automatic') else 'Explicit retained-work recovery authorized'
+        f.move(card, 'Building', detail)
+    live = pickup.cards(f.gh, [card['number']])
+    if len(live) != 1 or live[0] != card:
+        raise Halt('Recovery admission readback differs; no retry')
+    r['ticket_recovery_admission']['phase'] = 'verified'
+    f.save()
 
 
 def consume(f, card):

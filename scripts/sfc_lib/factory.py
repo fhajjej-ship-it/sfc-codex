@@ -139,6 +139,12 @@ def public_verification_description(command):
     return tools.get(argv[0] if argv else "", "Custom shell check") + " (command arguments withheld)"
 
 
+class WorkerTimedOut(TimedOut):
+    def __init__(self, lane, message):
+        super().__init__(message)
+        self.lane = lane
+
+
 class Factory:
     def __init__(self, root, config=None, github=None, processes=None):
         self.root = Path(root).resolve()
@@ -819,6 +825,8 @@ only if every item contains non-whitespace text, with no trailing empty string.
                                           worker_events=True)
             finished_tick = time.monotonic()
             elapsed = finished_tick - tick
+        except TimedOut as exc:
+            raise WorkerTimedOut(lane, str(exc)) from exc
         except Stopped:
             if (self.watcher and getattr(self.watcher, 'lifetime', False) and
                     self.watcher.clock() >= self.watcher.session['deadline'] and not self.processes.stop_requested()):
@@ -1663,7 +1671,7 @@ only if every item contains non-whitespace text, with no trailing empty string.
         action = code if code in ("stop", "interrupted") else "limit"
         self.activity.report(card, "Stopped", action, reasons=[reason(code)])
 
-    def park_ticket_failure(self, card, action, *, values=None):
+    def park_ticket_failure(self, card, action, *, values=None, interrupted_lane=None):
         """Quarantine an expected ticket failure, never uncertain supervisor IO.
 
         Only a watcher may isolate it. Pending claim/ref/completion/activity
@@ -1689,14 +1697,21 @@ only if every item contains non-whitespace text, with no trailing empty string.
                    'verification': json.loads(json.dumps(r.get('verification'))),
                    'dispatch': r.get('dispatch', {}).copy(),
                    'worker_output_budget': json.loads(json.dumps(r.get('worker_output_budget', {})))}
+        if interrupted_lane:
+            failure['interrupted_lane'] = interrupted_lane
+        auto = (interrupted_lane == 'build' and self.watcher.settings.get('recover_builds') and
+                self.watcher.settings.get('max_recoveries_per_ticket', 0) and
+                not r.get('ticket_recoveries') and not r.get('pr'))
         path = self.run_dir / f"issue-{card['number']}" / 'ticket-failure.json'
         write_json(path, failure)
         self.update(card, ticket_failure={**failure, 'receipt': str(path)})
-        self.move(card, 'Blocked', 'Ticket execution stopped; retained work requires explicit recovery')
+        self.move(card, 'Blocked', 'Ticket execution stopped; retained work awaits watcher verification'
+                  if auto else 'Ticket execution stopped; retained work requires explicit recovery')
         self.activity.report(card, 'Failed', action, reasons=values)
         self.note(card, 'SFC: this ticket is Blocked after a bounded execution failure. '
                   'Saved work and spent allowances are retained. The watcher may continue '
-                  'with other eligible tickets; this ticket needs explicit recovery.')
+                  'with other eligible tickets. ' + ('The watcher will evaluate this ticket for bounded Build recovery.'
+                                                    if auto else 'This ticket needs explicit recovery.'))
         failure.update(phase='blocked', finished=now())
         write_json(path, failure)
         self.update(card, ticket_failure={**failure, 'receipt': str(path)})
@@ -1718,8 +1733,11 @@ only if every item contains non-whitespace text, with no trailing empty string.
                                        run as recover_blocked)
         from .rate_limit import ReadConnectionReset
         from .qa_repair import active as active_qa_repair
-        if card['status'] == 'Blocked' and not recover_blocked(self, card):
-            return
+        if card['status'] == 'Blocked':
+            from .ticket_recovery import automatic_admit, automatic_eligibility
+            recover = automatic_admit if automatic_eligibility(self, card)[0] else recover_blocked
+            if not recover(self, card):
+                return
         claim = self.state['cards'].get(str(card['number']), {}).get('claim', {})
         if claim and claim.get('state') != 'verified':
             raise Halt('Unresolved priority claim; inspect before resuming')
@@ -1805,7 +1823,8 @@ only if every item contains non-whitespace text, with no trailing empty string.
             if isinstance(exc, Stopped):
                 self.stopped_activity(card)
             elif isinstance(exc, TimedOut):
-                if self.park_ticket_failure(card, 'timeout'):
+                if self.park_ticket_failure(card, 'timeout', interrupted_lane=(
+                        exc.lane if isinstance(exc, WorkerTimedOut) else None)):
                     return
                 self.activity.report(card, "Failed", "timeout")
             elif isinstance(exc, ExplainedHalt):
@@ -1914,7 +1933,7 @@ only if every item contains non-whitespace text, with no trailing empty string.
     def priority_plan(self, cards, *, closed=None):
         from .releases import Releases
         from .corrective_recovery import permits_findings_continuation
-        from .ticket_recovery import permits
+        from .ticket_recovery import automatic_eligibility, permits
         from .blocked_recovery import eligibility as recovery_eligibility
         from .blocked_recovery import admitted, defer_read, permits as automatic_permits, waiting_on_read
         from .rate_limit import ReadConnectionReset
@@ -1980,6 +1999,9 @@ only if every item contains non-whitespace text, with no trailing empty string.
                 reasons.append(RECOVERY_READ_WAIT)
             elif self.watcher and card['status'] == r.get('status') == 'Blocked' and not r.get('handoff') and not permits(self, card, r):
                 ok, detail = recovery_eligibility(self, card)
+                if not ok:
+                    ok, next_step = automatic_eligibility(self, card)
+                    detail = next_step or detail
                 if not ok:
                     reasons.append(r.get('recovery_wait') or detail)
             elif r.get('handoff'):

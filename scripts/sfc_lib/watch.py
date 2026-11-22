@@ -19,7 +19,7 @@ COMPLETION_SECONDS = 30
 def settings(value=None):
     if value is None:
         value = {}
-    if not isinstance(value, dict) or set(value) - {*DEFAULTS, 'pickup'}:
+    if not isinstance(value, dict) or set(value) - {*DEFAULTS, 'pickup', 'recover_builds', 'build_prerequisite_probes'}:
         raise Halt('watch must contain only documented watcher settings')
     result = {**copy.deepcopy(DEFAULTS), **value}
     pickup = result.pop('pickup', True)
@@ -28,6 +28,18 @@ def settings(value=None):
     # Preserve the shape of legacy watcher scopes and resumable receipts.
     if not pickup:
         result['pickup'] = False
+    if 'recover_builds' in result and type(result['recover_builds']) is not bool:
+        raise Halt('watch.recover_builds must be boolean')
+    if 'build_prerequisite_probes' in result:
+        probes = result['build_prerequisite_probes']
+        if (not isinstance(probes, dict) or any(
+                not isinstance(key, str) or not key.isascii() or not key.isdecimal() or key.startswith('0') or
+                not isinstance(argv, list) or not argv or any(
+                    not isinstance(arg, str) or not arg.strip() or '\0' in arg for arg in argv)
+                for key, argv in probes.items())):
+            raise Halt('watch.build_prerequisite_probes must map issue numbers to command argument arrays')
+        if not result.get('recover_builds'):
+            raise Halt('watch.build_prerequisite_probes requires watch.recover_builds')
     for key, maximum in MAXIMUMS.items():
         positive(result[key], 'watch.' + key, maximum)
     if type(result['max_recoveries_per_ticket']) is not int or not 0 <= result['max_recoveries_per_ticket'] <= 3:
