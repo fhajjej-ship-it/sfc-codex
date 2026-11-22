@@ -1933,7 +1933,7 @@ only if every item contains non-whitespace text, with no trailing empty string.
     def priority_plan(self, cards, *, closed=None):
         from .releases import Releases
         from .corrective_recovery import permits_findings_continuation
-        from .ticket_recovery import automatic_eligibility, permits
+        from .ticket_recovery import automatic_eligibility, expired_unadmitted_grant, permits
         from .blocked_recovery import eligibility as recovery_eligibility
         from .blocked_recovery import admitted, defer_read, permits as automatic_permits, waiting_on_read
         from .rate_limit import ReadConnectionReset
@@ -1989,6 +1989,8 @@ only if every item contains non-whitespace text, with no trailing empty string.
                 reasons.append('Automatic pickup is off for this watcher')
             elif self.watcher and card['number'] in self.admission_deferred:
                 reasons.append(WATCHER_ADMISSION_DEFERRED)
+            elif expired_unadmitted_grant(self, card, r):
+                reasons.append('Unused automatic Build grant belongs to a prior watcher session')
             elif r.get('release_correction_pending'):
                 reasons.append('Release correction needs explicit readback before dispatch')
             elif r.get('qa_repair') and r.get('recovery_wait'):

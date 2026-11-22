@@ -102,6 +102,8 @@ Changed task, base, source, retained evidence, or unresolved writes prevent
 automatic dispatch. The recovery preserves partial changes, requires the normal
 project checks and independent reviews, and inherits merge authority from the
 saved run. Each probe should be quick, read-only, and test the actual prerequisite.
+If the watcher stops before admission, a later session leaves the unused grant
+and its Blocked card in place and continues processing other eligible cards.
 
 ## Start, preview, status and stop
 

@@ -1,6 +1,6 @@
 {
   "name": "sfc",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "description": "A Codex-only software factory: GitHub Project issues to verified pull requests.",
   "author": {
     "name": "Farouk Hajjej"

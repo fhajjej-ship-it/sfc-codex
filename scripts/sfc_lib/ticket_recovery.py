@@ -452,6 +452,17 @@ def permits(f, card, r):
     return result.get('verdict') == 'pass' and read_json(Path(last['result_path']).parent / 'receipt.json').get('result') == result
 
 
+def expired_unadmitted_grant(f, card, record):
+    grants = pending(record)
+    if (len(grants) != 1 or not grants[0].get('automatic') or
+            record.get('ticket_recovery_admission') or
+            record.get('status') != 'Blocked' or card['status'] != 'Blocked'):
+        return None
+    session = (f.watcher.session or {}) if f.watcher else {}
+    grant = grants[0]
+    return grant if grant['automatic']['session'] != session.get('id') else None
+
+
 def admit(f, cards):
     """Report whether a grant required live admission checks."""
     checked = False
@@ -461,6 +472,12 @@ def admit(f, cards):
         r = f.state['cards'].get(str(card['number']), {})
         grants = pending(r)
         if not grants:
+            continue
+        expired = expired_unadmitted_grant(f, card, r)
+        if expired:
+            # No admission intent exists. Preserve the grant without retrying
+            # its board write or blocking unrelated cards in this session.
+            journal(f, expired)
             continue
         checked = True
         if len(grants) != 1:

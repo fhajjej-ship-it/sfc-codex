@@ -239,6 +239,28 @@ class RetainedRecoveryTests(unittest.TestCase):
         self.assertEqual(record['activity']['action'], 'human')
         self.assertEqual(self.gh.merges, [])
 
+    def test_interrupted_unadmitted_grant_does_not_stall_a_new_watcher(self):
+        def timeout(argv, cwd, log, *args, **kwargs):
+            Path(log).write_text('Owned interrupted Build\n')
+            raise TimedOut('Build timed out')
+
+        with patch('sfc_lib.ticket_recovery.admit_card', side_effect=Stopped('Before admission')):
+            with self.assertRaisesRegex(Stopped, 'Before admission'):
+                self.automatic_watch(timeout)
+        record = self.factory.state['cards']['1']
+        saved = copy.deepcopy(record['ticket_recoveries'])
+        self.assertEqual(saved[0]['status'], 'available')
+        self.assertNotIn('ticket_recovery_admission', record)
+        self.assertEqual(self.gh.cards()[0]['status'], 'Blocked')
+
+        self.gh.items.append(ticket(2))
+        self.watch()
+        self.assertEqual(self.factory.state['cards']['1']['ticket_recoveries'], saved)
+        self.assertEqual(self.gh.cards()[0]['status'], 'Blocked')
+        self.assertIn('pr', self.factory.state['cards']['2'])
+        self.assertEqual(self.proc.lanes, ['build', 'qa', 'security', 'review'])
+        self.assertEqual(self.gh.merges, [])
+
     def test_expended_automatic_build_does_not_launch_one_more_worker(self):
         attempts = []
 
