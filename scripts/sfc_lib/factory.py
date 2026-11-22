@@ -416,13 +416,13 @@ class Factory:
             raise MissingCheckEvidence("Missing or stale supervisor verification evidence; repeat project checks before read-only review")
         return receipt
 
-    def lane(self, card, lane, worktree, base, *, ticket_recovery_id=None):
+    def lane(self, card, lane, worktree, base, *, ticket_recovery_id=None, fresh=False):
         # Same-ticket duplicate calls serialize and reuse only validated proof.
         # Scheduler ticket slots remain the sole concurrency admission mechanism.
         with self.mutex:
             lock = self.review_locks.setdefault((card['number'], lane), threading.Lock())
         with lock:
-            if (lane != 'build' and review_policy.settings(self.c) is not None and
+            if (not fresh and lane != 'build' and review_policy.settings(self.c) is not None and
                     not self.record(card).get('release_evidence')):
                 head = git(worktree, 'rev-parse', 'HEAD')
                 if lane == 'review':
@@ -2002,6 +2002,8 @@ only if every item contains non-whitespace text, with no trailing empty string.
                 reasons.append('Unused automatic Build grant belongs to a prior watcher session')
             elif r.get('release_correction_pending'):
                 reasons.append('Release correction needs explicit readback before dispatch')
+            elif (r.get('pr_adoptions') or [{}])[-1].get('phase') in ('running', 'failed', 'handoff-intent'):
+                reasons.append('PR commit adoption requires inspection before further work')
             elif r.get('qa_repair') and r.get('recovery_wait'):
                 reasons.append(r['recovery_wait'])
             elif admitted(r) and (r.get('recovery_wait') or not automatic_permits(self, card, r)):

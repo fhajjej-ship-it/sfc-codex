@@ -42,12 +42,13 @@ def _evidence(f, paths):
     return evidence
 
 
-def binding(f, card, *, retained_verification=None):
+def binding(f, card, *, retained_verification=None, allow_handoff=False):
     r = f.state['cards'].get(str(card['number']), {})
     claim = r.get('claim', {})
     if (claim.get('state') != 'verified' or any(
             claim.get('observed', {}).get(k) != card.get(k) for k in ('id', 'number', 'item_id')) or
-            any(r.get(k) for k in ('ticket_failure', 'handoff', 'local_merge', 'external_completion',
+            (r.get('handoff') and not allow_handoff) or
+            any(r.get(k) for k in ('ticket_failure', 'local_merge', 'external_completion',
                                   'release_completion', 'pending_base')) or
             r.get('workflow_kind') == 'release' or f.creation_problem(card) or
             r.get('activity', {}).get('pending') or r.get('activity', {}).get('error')):

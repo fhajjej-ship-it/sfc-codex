@@ -301,6 +301,9 @@ def main(argv=None):
     retained.add_argument('--request-id', required=True)
     retained.add_argument('--reason', required=True)
     retained.add_argument('--grant-one', action='store_true')
+    retained.add_argument('--adopt-pr', type=int, metavar='PR',
+                          help='verify a newer commit on this saved PR without running another Build')
+    retained.add_argument('--head', metavar='FULL_SHA', help='exact approved PR head for --adopt-pr')
     start = sub.add_parser("run", help="drain eligible cards with finite limits")
     start.add_argument("--dry-run", action="store_true")
     start.add_argument("--include-backlog", action="store_true", help="opt in to priority pickup for explicitly scoped Backlog/Ready issues")
@@ -433,10 +436,18 @@ def main(argv=None):
                 result = grant(Factory(root), issue=args.issue, request_id=args.request_id,
                                reason=args.reason, grant_one=args.grant_one, pin_legacy_startup=args.pin_legacy_startup)
         elif args.command == 'recover-ticket':
-            from sfc_lib.ticket_recovery import grant
             with exclusive(root):
-                result = grant(Factory(root), issue=args.issue, request_id=args.request_id,
-                               reason=args.reason, grant_one=args.grant_one)
+                if (args.adopt_pr is None) != (args.head is None):
+                    raise Halt('--adopt-pr and --head must be supplied together')
+                if args.adopt_pr is not None:
+                    from sfc_lib.pr_adoption import recover
+                    result = recover(Factory(root), issue=args.issue, pr_number=args.adopt_pr,
+                                     candidate=args.head, request_id=args.request_id,
+                                     reason=args.reason, apply=args.grant_one)
+                else:
+                    from sfc_lib.ticket_recovery import grant
+                    result = grant(Factory(root), issue=args.issue, request_id=args.request_id,
+                                   reason=args.reason, grant_one=args.grant_one)
         elif args.command == 'autostart-status':
             result = autostart.status(root)
         elif args.command == 'autostart':
