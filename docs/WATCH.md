@@ -76,6 +76,35 @@ repair leaves the rejected candidate unchanged or the ticket exhausts its
 findings allowance, that ticket waits for inspection and other eligible work
 continues.
 
+### Automatic retained Build recovery
+
+Set `watch.recover_builds` to `true` before claiming work, then preview and
+authorize the watcher with these settings. With a positive
+`max_recoveries_per_ticket`, the saved policy allows one automatic retained Build
+per ticket. This counts against the same cumulative automatic recovery allowance
+as dependency, GitHub read, and missing-evidence recoveries. Restarts and later
+windows preserve the spent allowance.
+
+- A timeout recorded by the supervisor during an owned Build can qualify when the
+  original result is absent and the retained dispatch, worktree, and logs still
+  match.
+- An accepted blocked Build can qualify when an operator-configured prerequisite
+  probe exits successfully. Set `watch.build_prerequisite_probes` to a map from
+  repository issue numbers to direct local command argument arrays. For example,
+  `{"42": ["test", "-f", ".developer-prerequisite-ready"]}` checks for a
+  project-owned readiness marker. Codex runs the probe using its workspace
+  sandbox in the retained worktree. Issue and worker text supply no commands.
+
+An unsuccessful probe keeps the card Blocked and waits before another probe.
+Probe attempts run in normal scheduler slots and remain bounded by the watcher
+window and its cycle budget. A successful probe is recorded before admission.
+Changed task, base, source, retained evidence, or unresolved writes prevent
+automatic dispatch. The recovery preserves partial changes, requires the normal
+project checks and independent reviews, and inherits merge authority from the
+saved run. Each probe should be quick, read-only, and test the actual prerequisite.
+If the watcher stops before admission, a later session leaves the unused grant
+and its Blocked card in place and continues processing other eligible cards.
+
 ## Start, preview, status and stop
 
 Use the installed plugin script with the target repository root:

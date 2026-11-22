@@ -227,7 +227,8 @@ def eligibility(f, card):
     if pending:
         if pending['blocker'] != b or not same_window_scope(f, pending, session):
             return False, 'Recovery reservation belongs to another blocker or watcher'
-    elif len(actions) >= f.watcher.settings.get('max_recoveries_per_ticket', 0):
+    elif (len(actions) + sum(bool(g.get('automatic')) for g in r.get('ticket_recoveries', [])) >=
+          f.watcher.settings.get('max_recoveries_per_ticket', 0)):
         return False, 'Automatic recovery allowance exhausted; explicit recovery required'
     if r['attempts'] >= f.c['max_attempts'] and b.get('stage') == 'Building':
         return False, 'Findings attempt budget exhausted; explicit recovery required'
