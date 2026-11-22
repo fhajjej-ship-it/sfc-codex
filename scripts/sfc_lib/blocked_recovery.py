@@ -42,12 +42,12 @@ def _evidence(f, paths):
     return evidence
 
 
-def binding(f, card, *, retained_verification=None, allow_handoff=False):
+def binding(f, card, *, retained_verification=None, adoption_head=None):
     r = f.state['cards'].get(str(card['number']), {})
     claim = r.get('claim', {})
     if (claim.get('state') != 'verified' or any(
             claim.get('observed', {}).get(k) != card.get(k) for k in ('id', 'number', 'item_id')) or
-            (r.get('handoff') and not allow_handoff) or
+            (r.get('handoff') and adoption_head is None) or
             any(r.get(k) for k in ('ticket_failure', 'local_merge', 'external_completion',
                                   'release_completion', 'pending_base')) or
             r.get('workflow_kind') == 'release' or f.creation_problem(card) or
@@ -56,8 +56,11 @@ def binding(f, card, *, retained_verification=None, allow_handoff=False):
     wt = Path(r['worktree']).resolve()
     if (not wt.is_relative_to((f.dir / 'worktrees').resolve()) or
             common_dir(wt) != common_dir(f.root) or
-            git(wt, 'branch', '--show-current') != r['branch'] or
-            git(wt, 'rev-parse', 'HEAD') != r.get('head', r['base']) or
+            git(wt, 'branch', '--show-current') != r['branch']):
+        raise Halt('Recovery source or worktree changed; inspect saved work')
+    saved_head = r.get('head', r['base'])
+    worktree_head = git(wt, 'rev-parse', 'HEAD')
+    if (worktree_head not in (saved_head, adoption_head) or
             git(wt, 'status', '--porcelain', '--untracked-files=all')):
         raise Halt('Recovery source or worktree changed; inspect saved work')
     # Keep both present bytes and absence pinned. Late worker/check output is
@@ -74,13 +77,16 @@ def binding(f, card, *, retained_verification=None, allow_handoff=False):
         for check in receipt.get('checks', []):
             for execution in (check, check.get('reuse') or {}):
                 paths.extend(execution[k] for k in ('log', 'receipt_path') if execution.get(k))
-    return {'config': f.config_digest, 'task': f.task_digest(card), 'scope': card['_pickup_scope'],
+    pins = {'config': f.config_digest, 'task': f.task_digest(card), 'scope': card['_pickup_scope'],
             'identity': {k: card[k] for k in ('number', 'id', 'item_id', 'url', 'repository')},
-            'claim': digest(claim), 'head': r.get('head', r['base']), 'base': r['base'],
+            'claim': digest(claim), 'head': saved_head, 'base': r['base'],
             'branch': r['branch'], 'pr': r.get('pr'), 'worktree': str(wt),
             'attempts': r['attempts'], 'budgets': digest(r.get('worker_output_budget', {})),
             'receipts': digest(r.get('receipts', {})), 'verification': digest(r.get('verification', {})),
             'evidence': _evidence(f, paths)}
+    if adoption_head is not None:
+        pins['worktree_head'] = worktree_head
+    return pins
 
 
 def _matches_binding(f, current, original, *, replacing_verification, retaining_prior=False):

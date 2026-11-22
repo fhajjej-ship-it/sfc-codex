@@ -67,6 +67,45 @@ class PRAdoptionTests(unittest.TestCase):
         with self.assertRaisesRegex(Halt, 'already has a recovery receipt'):
             self.recover(apply=True)
 
+    def test_adopts_candidate_when_owned_worktree_already_has_the_fix(self):
+        self.setup_pr(rejected_checks=True)
+        git(self.old['worktree'], 'merge', '--ff-only', self.candidate)
+        before = self.factory.state_path.read_bytes()
+        build_log = Path(self.old['worker_output_budget']['build']['dispatches'][0]['log'])
+        build_evidence = build_log.read_bytes()
+
+        preview = self.recover()
+        self.assertEqual(preview['state'], 'preview')
+        self.assertEqual(preview['previous_head'], self.old['head'])
+        self.assertEqual(preview['head'], self.candidate)
+        self.assertEqual(self.factory.state_path.read_bytes(), before)
+        self.assertEqual(git(self.old['worktree'], 'rev-parse', 'HEAD'), self.candidate)
+        self.assertTrue(self.factory.dir.joinpath('stop').exists())
+        self.assertEqual(self.proc.lanes, ['build'])
+
+        self.assertEqual(self.recover(apply=True)['state'], 'awaiting-manual-merge')
+        record = self.factory.state['cards']['1']
+        self.assertEqual(record['handoff'], self.candidate)
+        self.assertEqual(record['attempts'], self.old['attempts'])
+        self.assertEqual(record['worker_output_budget']['build'], self.old['worker_output_budget']['build'])
+        self.assertEqual(build_log.read_bytes(), build_evidence)
+        self.assertTrue(record['verification']['passed'])
+        self.assertTrue(all(check.get('reuse') is None for check in record['verification']['checks']))
+        self.assertEqual(self.proc.lanes, ['build', 'qa', 'security', 'review'])
+        self.assertEqual(self.gh.merges, [])
+
+    def test_rejects_uncommitted_work_even_at_the_approved_head(self):
+        self.setup_pr(rejected_checks=True)
+        git(self.old['worktree'], 'merge', '--ff-only', self.candidate)
+        uncommitted = Path(self.old['worktree']) / 'uncommitted.txt'
+        uncommitted.write_text('Preserve this work\n')
+
+        with self.assertRaisesRegex(Halt, 'Recovery source or worktree changed'):
+            self.recover(apply=True)
+        self.assertEqual(uncommitted.read_text(), 'Preserve this work\n')
+        self.assertNotIn('pr_adoptions', self.factory.state['cards']['1'])
+        self.assertEqual(self.proc.lanes, ['build'])
+
     def test_preserves_prior_review_and_rejects_head_movement_before_handoff(self):
         self.setup_pr()
         original = self.proc.on_lane

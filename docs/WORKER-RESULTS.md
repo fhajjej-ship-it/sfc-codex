@@ -212,13 +212,14 @@ Use `recover-ticket --issue N --adopt-pr PR --head FULL_SHA --request-id ID
 --reason TEXT` to preview. Add `--grant-one` after stopping the supervisor to
 explicitly run one check-and-review recovery on that exact commit.
 
-The card must be open, owned and Blocked, with a clean saved worktree. The same
-open PR, repository, branch and unchanged base must match. The approved head
-must descend from the saved head and base. A preview may fetch the exact commit
-objects locally to prove ancestry. It does not update the branch or the board.
+The card must be open, owned and Blocked, with a clean owned worktree at either
+the saved head or the exact approved PR head. The same open PR, repository,
+branch and unchanged base must match. The approved head must descend from the
+saved head and base. A preview may fetch the exact commit objects locally to
+prove ancestry. It does not update the branch or the board.
 
-The supervisor journals the one-time allowance before fast-forwarding the owned
-worktree, preserves the earlier evidence and counters, and runs fresh configured
+The supervisor journals the one-time allowance, fast-forwards the worktree if
+needed, preserves the earlier evidence and counters, and runs fresh configured
 checks, QA, Security and final review. The card remains Blocked until a human
 merge. A failed check, changed head or base, or uncertain write retains the
 receipts. Retrying the same head or using a different request ID cannot spend a
