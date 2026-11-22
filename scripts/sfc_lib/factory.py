@@ -157,6 +157,7 @@ class Factory:
         self._delivery_command_folder = None
         self._delivery_startup_commands = []
         self.allow_merge = False
+        self.waiting_for_build = False
         self.include_backlog = False
         self.issue_scope = ()
         self.watcher = None
@@ -661,14 +662,16 @@ only if every item contains non-whitespace text, with no trailing empty string.
                 "-s", "workspace-write" if lane == "build" else "read-only",
                 "-c", 'approval_policy="never"', "--output-schema", str(PACKAGE / "schemas/lane-result.json"),
                 "--output-last-message", str(output), "-"]
-        model = self.c.get("models", {}).get(lane) or self.c.get("model")
+        requested = worker_runtime.lane_settings(
+            self.c, lane, card['number'], waiting=self.waiting_for_build)
+        model = requested['model']
         if composite_qa:
             argv[argv.index('--output-schema') + 1] = str(PACKAGE / 'schemas/release-review-result.json')
         settings = worker_runtime.arguments(self.c)
         if model:
             settings += ["-m", model]
         for key, codex_key in (("reasoning_effort", "model_reasoning_effort"), ("service_tier", "service_tier")):
-            value = self.c.get(key)
+            value = requested[key]
             if value is not None:
                 settings += ["-c", f"{codex_key}={json.dumps(value)}"]
         argv[2:2] = settings
@@ -779,6 +782,8 @@ only if every item contains non-whitespace text, with no trailing empty string.
                         "status": "reserved",
                         "worker_context": context.receipt() if context is not None else None,
                         "worker_runtime": worker_runtime.receipt(self.c)}
+            if 'worker_routing' in self.c:
+                dispatch['worker_settings'] = requested
             if policy is not None:
                 dispatch.update(provider=provider, review_scope=expected_scope)
             if recovery_id:
@@ -2182,16 +2187,21 @@ only if every item contains non-whitespace text, with no trailing empty string.
         watcher = Watch(self, start=start, resume=resume, overrides=overrides, **timing)
         return self._run(allow_merge=allow_merge, dry_run=dry_run, include_backlog=True, watcher=watcher, admission=admission)
 
-    def run(self, *, allow_merge=False, dry_run=False, include_backlog=False, issues=()):
+    def run(self, *, allow_merge=False, dry_run=False, include_backlog=False, issues=(), waiting=False):
         if (include_backlog and not issues) or (issues and not include_backlog):
             raise Halt('--include-backlog requires explicit --issue numbers; --issue requires --include-backlog')
         if any(type(n) is not int or n <= 0 for n in issues):
             raise Halt('Run issue scope must contain positive issue numbers')
-        return self._run(allow_merge=allow_merge, dry_run=dry_run, include_backlog=include_backlog, issues=issues)
+        if waiting and ('worker_routing' not in self.c or len(set(issues)) != 1):
+            raise Halt('--waiting requires worker_routing and exactly one --include-backlog --issue scope')
+        return self._run(allow_merge=allow_merge, dry_run=dry_run, include_backlog=include_backlog,
+                         issues=issues, waiting=waiting)
 
-    def _run(self, *, allow_merge=False, dry_run=False, include_backlog=False, issues=(), watcher=None, admission=None):
+    def _run(self, *, allow_merge=False, dry_run=False, include_backlog=False, issues=(), watcher=None, admission=None,
+             waiting=False):
         self.watcher = watcher
         self.allow_merge = allow_merge
+        self.waiting_for_build = waiting
         self.include_backlog = include_backlog
         self.issue_scope = tuple(sorted(set(issues)))
         options = {'include_backlog': include_backlog, 'issues': list(self.issue_scope),
@@ -2199,6 +2209,8 @@ only if every item contains non-whitespace text, with no trailing empty string.
                    'project': self.c['project'], 'status_field': self.c['status_field']}
         if watcher:
             options = {**watcher.policy(), "allow_merge": allow_merge}
+        if 'worker_routing' in self.c:
+            options['waiting'] = waiting
         if dry_run:
             from .watch import supervisor_locked
             # Another process may own the common lock. Its timestamped slot

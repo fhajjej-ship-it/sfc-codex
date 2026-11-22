@@ -26,6 +26,7 @@ providers and minimum risk rules. Omission preserves the existing three lanes.
 | `worker_runtime` | Optional `skill_catalog` and `memories` booleans. Omitted keys inherit Codex. Normal efficiency setup/migration sets both to `false` unless an explicit object already exists or the profile is `off`. |
 | `work_types` | Optional explicit five-type label mapping pinned by `id`, `name`, `description`; see [work types](WORK-TYPES.md) |
 | `models` | `{}`; optional `build`, `qa`, `security`, `review` model overrides |
+| `worker_routing` | Optional GPT-6.2 Sol routing with a list of operator-selected routine Build issues. |
 | `release` | Optional; omitted/off preserves existing behavior. Separate packaging, artifact verification, version trigger and scoped draft/publication authority; see [release configuration](RELEASES.md). |
 | `max_workers` | `2`, allowed 1–16. `sfc doctor` reports the configured worker concurrency limit as a top-level JSON integer named `max_workers`. |
 | `max_cycles` | `20` individual ticket admissions, reserved before claim; allowed 1–1000 |
@@ -43,6 +44,26 @@ Onboarding accepts `--model`, `--reasoning-effort` and `--service-tier` override
 Use `inherit` for an onboarding option, or null/omit the corresponding JSON
 field, to inherit Codex CLI settings. Existing configurations retain their
 choices and inheritance behavior; onboarding refuses to overwrite them.
+
+To opt in to GPT-6.2 Sol routing, set these fields while the factory is stopped.
+
+```json
+{
+  "model": "gpt-6.2-sol",
+  "reasoning_effort": "high",
+  "service_tier": "default",
+  "models": {},
+  "worker_routing": { "routine_build_issues": [42] }
+}
+```
+
+Build uses Medium reasoning for the listed issues. Other Builds, QA, Security,
+and Review use High. All use Standard speed by default, including in a watcher.
+Add `--waiting` to a one-ticket invocation of `run --include-backlog --issue 42`
+and its dry run to request Fast for that ticket's Build. Reviews stay on
+Standard. The issue list is local operator configuration. Reassess scope when
+the task changes. Run previews show whether Fast Build was requested, and
+dispatch receipts record the settings requested for each worker.
 
 `sfc doctor` includes a top-level `worker_settings` object alongside the timeout
 fields. It reports the requested `model`, `reasoning_effort` and `service_tier`
