@@ -561,7 +561,9 @@ def verify(f, card, wt, base, *, force_check_ids=(), prior_receipt=None, report_
     write_json(folder / 'started.json', {'head': head, 'base': base, 'time': now()})
     try:
         load(previous, fingerprint_budget(f))
-        previous_checks = previous['checks'] if previous.get('passed') else []
+        # Explicit recovery may supply an immutable partial verification. Each
+        # execution must still pass the ordinary reuse contract independently.
+        previous_checks = previous['checks'] if previous.get('passed') or prior_receipt else []
     except (OSError, ValueError, KeyError, TypeError):
         previous_checks = []
     records = []
@@ -581,7 +583,7 @@ def verify(f, card, wt, base, *, force_check_ids=(), prior_receipt=None, report_
                 if miss == 'legacy, incomplete, tampered or missing evidence':
                     miss = candidate_miss
         if index + 1 in force_check_ids:
-            ref, miss = None, 'structured independent review requested fresh configured check evidence'
+            ref, miss = None, 'recovery requested fresh configured check evidence'
         if ref:
             value = load(ref, fingerprint_budget(f))
             reused = {'command': command, 'exit_code': 0, 'log': value['log'], 'reuse': ref, 'reason': miss}

@@ -60,7 +60,7 @@ claim/ref/completion/activity writes, stops, configuration drift and unknown
 errors still halt the supervisor. Worktrees, raw receipts and spent reservations
 remain intact; quarantined execution failures require explicit recovery and gain no retry.
 New watcher policies separately authorize finite automatic recovery of structured
-read, prerequisite and check-evidence blockers; see [watcher recovery](WATCH.md#automatic-recovery-of-owned-blocked-work).
+read, prerequisite, missing-evidence and failed-check blockers; see [watcher recovery](WATCH.md#automatic-recovery-of-owned-blocked-work).
 These actions preserve source/evidence and spent attempts, never grant another
 Build at its findings cap, and retain independent review and merge/publication gates.
 The operator can explicitly grant one watcher-eligible retained-work Build for

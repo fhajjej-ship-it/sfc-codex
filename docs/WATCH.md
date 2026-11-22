@@ -20,8 +20,8 @@ and gain no automatic recovery authority. Recovery starts from a saved watcher
 policy. Merge and publication require separate authority.
 
 The watcher recognizes structured supervisor blockers: an exhausted transient
-read, an open same-repository prerequisite, or missing project-check execution
-evidence before independent review. It checks identity, current routing scope,
+read, an open same-repository prerequisite, missing project-check execution
+evidence, or a failed project check before independent review. It checks identity, current routing scope,
 task/configuration, claim, clean retained worktree, exact head/base/PR and original
 receipt/log bytes. Holds, exclusions, human handoffs, release journals, ambiguous
 writes, source drift and unsupported blockers retain their existing gates.
@@ -43,6 +43,17 @@ refunding attempts or granting another Build. A pre-upgrade Blocked ticket can r
 independent result matches the saved Blocked verdict and its exact supervisor
 packet has a missing execution receipt or log. The worker's prose does not
 classify the legacy blocker.
+
+A new watcher with a positive recovery allowance can retry a failed supervisor
+project check once on the same open PR commit and base. It forces the failed
+command to run fresh, runs any remaining required commands, and reuses earlier
+passes only under their existing evidence contracts. If the checks pass, it
+continues with the configured independent QA and review gates. If the check
+fails again, the card stays Blocked and the retry remains spent across windows.
+This does not launch a Build or renew a Build or findings attempt. A ticket
+already blocked after a spent failed-check Build grant can use the same retry
+when its original failed check, the accepted Blocked Build, and the unchanged
+PR and worktree can all be verified.
 
 Each action is reserved durably before dispatch. A crash cannot refund it or
 accept an old passing receipt as fresh execution. Admission and subsequent

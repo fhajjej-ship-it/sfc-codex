@@ -86,6 +86,97 @@ class BlockedRecoveryTests(unittest.TestCase):
         f.watcher.begin(False)
         self.card = pickup.cards(self.gh)[0]
 
+    def test_failed_project_check_retries_exact_pr_and_runs_normal_reviews(self):
+        execute = self.proc.execute
+        checks = []
+
+        def fail_once(argv, cwd, log, *args, **kwargs):
+            if argv[0] != 'codex':
+                checks.append(recovery.git(cwd, 'rev-parse', 'HEAD'))
+                if len(checks) == 1:
+                    Path(log).write_text('Fixture prerequisite unavailable\n')
+                    return 1
+            return execute(argv, cwd, log, *args, **kwargs)
+
+        with patch.object(self.proc, 'execute', side_effect=fail_once):
+            self.watch()
+        r = self.factory.state['cards']['1']
+        retry, = r['blocked_recoveries']
+        self.assertEqual(retry['blocker']['kind'], recovery.FAILED_CHECK)
+        self.assertEqual(checks, [r['head'], r['head']])
+        self.assertEqual(retry['blocker']['binding']['pr'], r['pr'])
+        self.assertEqual(retry['phase'], 'finished')
+        self.assertEqual(r['attempts'], 0)
+        self.assertEqual(r['handoff'], r['head'])
+        self.assertEqual(self.proc.lanes, ['build', 'qa', 'security', 'review'])
+        self.assertEqual(self.gh.merges, [])
+
+    def test_failed_project_check_spends_only_one_retry_across_restart(self):
+        self.c['watch'] = {'max_recoveries_per_ticket': 3}
+        self.factory = Factory(self.root, self.c, self.gh, self.proc)
+        execute = self.proc.execute
+        checks = []
+
+        def fail_check(argv, cwd, log, *args, **kwargs):
+            if argv[0] == 'codex':
+                return execute(argv, cwd, log, *args, **kwargs)
+            checks.append(recovery.git(cwd, 'rev-parse', 'HEAD'))
+            Path(log).write_text('Fixture prerequisite still unavailable\n')
+            return 1
+
+        with patch.object(self.proc, 'execute', side_effect=fail_check):
+            self.watch()
+            self.factory = Factory(self.root, self.c, self.gh, self.proc)
+            self.watch()
+        r = self.factory.state['cards']['1']
+        retry, = r['blocked_recoveries']
+        self.assertEqual(retry['phase'], 'failed')
+        self.assertEqual(checks, [r['head'], r['head']])
+        self.assertEqual(self.proc.lanes, ['build'])
+        self.assertEqual(r['status'], 'Blocked')
+        self.assertEqual(self.gh.merges, [])
+
+    def test_failed_project_check_recovers_legacy_blocked_build_at_attempt_cap(self):
+        from sfc_lib.ticket_recovery import grant
+
+        self.c['max_attempts'] = 1
+        self.factory = Factory(self.root, self.c, self.gh, self.proc)
+        execute = self.proc.execute
+
+        def fail_check(argv, cwd, log, *args, **kwargs):
+            if argv[0] == 'codex':
+                return execute(argv, cwd, log, *args, **kwargs)
+            Path(log).write_text('Recorded failed supervisor check\n')
+            return 1
+
+        with patch.object(self.proc, 'execute', side_effect=fail_check):
+            self.factory.run(include_backlog=True, issues=(1,))
+        (self.factory.dir / 'stop').touch()
+        grant(self.factory, issue=1, request_id='prior-check-recovery', reason='Fixture recovery', grant_one=True)
+
+        def blocked_build(argv, cwd, log, *args, **kwargs):
+            code = execute(argv, cwd, log, *args, **kwargs)
+            if argv[0] == 'codex':
+                path = Path(argv[argv.index('--output-last-message') + 1])
+                write_json(path, {**read_json(path), 'verdict': 'blocked'})
+            return code
+
+        with (patch.object(self.proc, 'execute', side_effect=blocked_build),
+              patch.object(recovery, 'SUPPORTED', recovery.SUPPORTED - {recovery.FAILED_CHECK})):
+            self.watch()
+        old = copy.deepcopy(self.factory.state['cards']['1'])
+        self.assertEqual(old['status'], 'Blocked')
+        self.assertEqual(old['ticket_recoveries'][0]['status'], 'spent')
+        self.assertEqual(self.proc.lanes, ['build', 'build'])
+        self.factory = Factory(self.root, self.c, self.gh, self.proc)
+        self.watch()
+        r = self.factory.state['cards']['1']
+        self.assertEqual(self.proc.lanes, ['build', 'build', 'qa', 'security', 'review'])
+        self.assertEqual(r['handoff'], old['head'])
+        for key in ('pr', 'head', 'base', 'worktree', 'attempts', 'ticket_recoveries'):
+            self.assertEqual(r[key], old[key], key)
+        self.assertEqual(self.gh.merges, [])
+
     def test_143_checks_same_candidate_and_reviews_without_build(self):
         self.missing_checks()
         before = len(self.proc.lanes)
