@@ -58,7 +58,7 @@ def inspect(f, card, pr_number, candidate):
             f.task_digest(claim) != f.task_digest(card)):
         raise Halt('Adoption ticket or Project scope differs from the saved claim')
     with preview_fingerprints():
-        pins = binding(f, card, allow_handoff=True)
+        pins = binding(f, card, adoption_head=candidate)
     wt = Path(pins['worktree'])
     pr = live_candidate(f, card, wt, candidate, pins['base'])
     # Obtain the exact objects without moving a branch, checking out a file, or writing FETCH_HEAD.
@@ -129,11 +129,12 @@ def recover(f, *, issue, pr_number, candidate, request_id, reason, apply=False):
 
     try:
         live_candidate(f, card, wt, candidate, base, pins['pr_id'])
-        clean_head(wt, pins['head'])
+        clean_head(wt, pins['worktree_head'])
         shared_stop.unlink(missing_ok=True)
         stop.unlink(missing_ok=True)
         f.ensure_running()
-        git(wt, 'merge', '--ff-only', '--no-edit', candidate)
+        if pins['worktree_head'] != candidate:
+            git(wt, 'merge', '--ff-only', '--no-edit', candidate)
         clean_head(wt, candidate)
         for key in history_keys:
             record.pop(key, None)
