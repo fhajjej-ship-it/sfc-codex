@@ -984,16 +984,23 @@ only if every item contains non-whitespace text, with no trailing empty string.
         from .review_inspection import overlap
         return overlap(self, card, worktree, base, check, release_snapshot, role=role)
 
-    def fail(self, card, result, *, inspection_rejection=None, repair_unchanged=False):
+    def fail(self, card, result, *, inspection_rejection=None, repair_unchanged=False, failed_project_check=False):
         from .review_retention import capture
         from . import qa_repair
         r = self.record(card)
-        from .blocked_recovery import (MissingCheckEvidence, admitted, check_request, mark, require_live,
+        from .blocked_recovery import (FAILED_CHECK, MissingCheckEvidence, admitted, check_request, mark, require_live,
                                        restore_candidate_checks)
         restore_candidate_checks(self, card, admitted(r))
         require_live(self, card)
         recovery_kind = None
-        if (result.get('verdict') == 'blocked' and not result.get('findings') and
+        if (failed_project_check and self.watcher and card.get('_pickup_scope') and card['status'] == 'QA' and
+                r.get('pr') and r.get('verification', {}).get('passed') is False and
+                FAILED_CHECK in (self.watcher.session or {}).get('policy', {}).get('blocked_recovery_kinds', ()) and
+                not admitted(r) and not any(a['blocker']['kind'] == FAILED_CHECK for a in r.get('blocked_recoveries', [])) and
+                len(r.get('blocked_recoveries', [])) + sum(bool(g.get('automatic'))
+                    for g in r.get('ticket_recoveries', [])) < self.watcher.settings.get('max_recoveries_per_ticket', 0)):
+            recovery_kind = FAILED_CHECK
+        elif (result.get('verdict') == 'blocked' and not result.get('findings') and
                 (r.get('pr') or 'qa' in card['labels']) and any(
                     v.get('lane') in ('qa', 'security', 'review') and v.get('result') == result
                     for v in r.get('receipts', {}).values())):
@@ -1017,7 +1024,7 @@ only if every item contains non-whitespace text, with no trailing empty string.
         one_use = any(g['status'] == 'spent' for key in ('ticket_recoveries', 'corrective_builds')
                       for g in r.get(key, []))
         repair = qa_repair.capture(self, card, result)
-        status = ("Blocked" if result.get("verdict") == "blocked" or repair_unchanged or
+        status = ("Blocked" if recovery_kind == FAILED_CHECK or result.get("verdict") == "blocked" or repair_unchanged or
                   updates["attempts"] >= self.c["max_attempts"] or one_use or
                   (active_recovery and repair is None) else "Building")
         if status == 'Building' and repair:
@@ -1037,7 +1044,8 @@ only if every item contains non-whitespace text, with no trailing empty string.
                 mark(self, card, recovery_kind, 'QA')
         if recovery_kind:
             self.activity.report(card, 'Waiting', 'recovery_wait')
-            self.note(card, 'SFC Blocked: Waiting for bounded recovery of missing check evidence.')
+            self.note(card, 'SFC Blocked: Waiting for a one-time retry of a failed project check on this PR.'
+                      if recovery_kind == FAILED_CHECK else 'SFC Blocked: Waiting for bounded recovery of missing check evidence.')
             return
         if status == 'Building' and repair:
             self.activity.report(card, 'Waiting', 'findings')
@@ -1230,7 +1238,8 @@ only if every item contains non-whitespace text, with no trailing empty string.
         from .blocked_recovery import verified_checks
         if not verified_checks(self, card, git(wt, 'rev-parse', 'HEAD'), base) and not self.overlap_review(
                 card, wt, base, lambda: self.verify(card, wt, base)):
-            self.fail(card, {"verdict": "fail", "summary": "Project verification commands failed; inspect the recorded logs"})
+            self.fail(card, {"verdict": "fail", "summary": "Project verification commands failed; inspect the recorded logs"},
+                      failed_project_check=True)
             return False
         # Ignore generated artifacts only if the owning project ignores them.
         if git(wt, "status", "--porcelain", "--untracked-files=all"):

@@ -18,7 +18,8 @@ from .rate_limit import ReadConnectionReset
 from .reasons import RECOVERY_ITEM_MISSING, RECOVERY_READ_WAIT
 from .worker_recovery import digest
 
-SUPPORTED = {'transient-read', 'dependency', 'missing-check-evidence'}
+FAILED_CHECK = 'failed-project-check'
+SUPPORTED = {'transient-read', 'dependency', 'missing-check-evidence', FAILED_CHECK}
 STAGES = {'Building', 'QA', 'Review'}
 
 
@@ -65,7 +66,8 @@ def binding(f, card, *, retained_verification=None):
         for dispatch in budget['dispatches']:
             paths.extend(dispatch[k] for k in ('log', 'result_path'))
             paths.append(str(Path(dispatch['result_path']).parent / 'receipt.json'))
-    retained = retained_verification or r.get('blocker', {}).get('legacy_verification', {})
+    blocker = r.get('blocker', {})
+    retained = retained_verification or blocker.get('legacy_verification') or blocker.get('failed_verification', {})
     for receipt in [retained, r.get('verification', {}), *r.get('receipts', {}).values()]:
         paths.extend(receipt[k] for k in ('receipt_path',) if receipt.get(k))
         for check in receipt.get('checks', []):
@@ -189,6 +191,94 @@ def legacy_blocker(f, card, record):
     return None
 
 
+def failed_check_id(f, card, receipt):
+    from .verification import fingerprint_budget, load, original
+
+    record = f.record(card)
+    pins = {'head': record['head'], 'base': record['base'], 'worktree': record['worktree'],
+            'config_digest': f.config_digest, 'task_digest': f.task_digest(card), 'repository': f.c['repo']}
+    guard = fingerprint_budget(f)
+    checks = receipt['checks']
+    if (receipt.get('kind') != 'verification' or receipt.get('passed') is not False or
+            any(receipt.get(k) != value for k, value in pins.items()) or
+            not 0 < len(checks) <= len(f.c['verify_commands']) or
+            [check['command'] for check in checks] != f.c['verify_commands'][:len(checks)]):
+        raise ValueError('Failed verification does not match the retained candidate')
+    _evidence(f, (receipt['receipt_path'],))
+    load(receipt, guard)
+    for index, check in enumerate(checks, 1):
+        ref = check.get('reuse') or check
+        hashes = _evidence(f, (ref['receipt_path'], ref['log']))
+        execution, _ = original(check, guard)
+        if (check['exit_code'] != execution['exit_code'] or type(execution['exit_code']) is not int or
+                bool(execution['exit_code']) != (index == len(checks)) or
+                check['command'] != execution['command'] or check['log'] != execution['log'] or
+                hashes[execution['log']] != execution['log_sha256']):
+            raise ValueError('Failed verification execution evidence differs')
+        if execution['exit_code'] and (check.get('reuse') or any(execution.get(k) != value for k, value in pins.items())):
+            raise ValueError('Failed execution does not match the retained candidate')
+    return len(checks)
+
+
+def legacy_failed_check(f, card, record):
+    """Recover the failed check that led to a spent, blocked recovery Build."""
+    from .ticket_recovery import journal
+
+    if (not record.get('pr') or record.get('verification') or record.get('receipts') or
+            record.get('claim', {}).get('observed', {}).get('_pickup_scope') != card.get('_pickup_scope')):
+        return None
+    budgets = record.get('worker_output_budget', {})
+    builds = budgets.get('build', {}).get('dispatches', [])
+    if not builds or any(budgets.get(lane, {}).get('dispatches') for lane in ('qa', 'security', 'review')):
+        return None
+    dispatch = builds[-1]
+    grants = [g for g in record.get('ticket_recoveries', []) if g.get('kind') == 'checks' and
+              g.get('status') == 'spent' and g['request_id'] == dispatch.get('ticket_recovery_id')]
+    if dispatch.get('status') != 'accepted' or len(grants) != 1:
+        return None
+    try:
+        g = grants[0]
+        journal(f, g)
+        old = g['binding']
+        pins = binding(f, card)
+        if (any(old[k] != pins[k] for k in ('head', 'base', 'branch', 'worktree', 'config', 'task', 'claim')) or
+                old['pr']['number'] != pins['pr'] or old['pr']['headRefOid'] != pins['head'] or
+                _evidence(f, [entry['path'] for entry in old['evidence']]) !=
+                {entry['path']: entry.get('sha256') for entry in old['evidence']}):
+            return None
+        result = json.loads(record['feedback'])
+        result_path = Path(dispatch['result_path'])
+        worker = read_json(result_path.parent / 'receipt.json')
+        if (result['verdict'] != 'blocked' or read_json(result_path) != result or worker['result'] != result or
+                any(worker[k] != dispatch[k] or dispatch[k] != value for k, value in {
+                    'head': pins['head'], 'base': pins['base'], 'config_digest': pins['config'],
+                    'task_digest': pins['task']}.items()) or dispatch['worktree'] != pins['worktree']):
+            return None
+        refs = [entry for entry in old['evidence']
+                if Path(entry['path']).name == 'receipt.json' and Path(entry['path']).parent.name.startswith('verify-')]
+        if len(refs) != 1:
+            return None
+        path = refs[0]['path']
+        verification = {**read_json(Path(path)), 'receipt_path': path, 'receipt_sha256': refs[0]['sha256']}
+        failed_check_id(f, card, verification)
+        return {'kind': FAILED_CHECK, 'stage': 'QA', 'since': worker['time'],
+                'binding': binding(f, card, retained_verification=verification), 'failed_verification': verification}
+    except (Stopped, TimedOut):
+        raise
+    except (Halt, OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def effective_blocker(f, card, record, kinds):
+    saved = record.get('blocker') or {}
+    if FAILED_CHECK in kinds and saved.get('kind') in (None, 'human-or-unsupported'):
+        if result := legacy_failed_check(f, card, record):
+            return result
+    if not saved and 'missing-check-evidence' in kinds:
+        return legacy_blocker(f, card, record) or {}
+    return saved
+
+
 def defer_read(watcher, card):
     # Scheduler slot refill polls can run immediately. Give other tickets a
     # chance before this read is retried on the normal poll cadence.
@@ -210,10 +300,7 @@ def eligibility(f, card):
         return False, r['recovery_wait']
     session = f.watcher.session or {'policy': f.watcher.policy()}
     kinds = session['policy'].get('blocked_recovery_kinds', [])
-    b = r.get('blocker')
-    if not b and 'missing-check-evidence' in kinds:
-        b = legacy_blocker(f, card, r)
-    b = b or {}
+    b = effective_blocker(f, card, r, kinds)
     if b.get('kind') not in SUPPORTED:
         return False, 'Human decision or unsupported blocker; explicit recovery required'
     if b['kind'] not in kinds:
@@ -227,6 +314,8 @@ def eligibility(f, card):
     if pending:
         if pending['blocker'] != b or not same_window_scope(f, pending, session):
             return False, 'Recovery reservation belongs to another blocker or watcher'
+    elif b['kind'] == FAILED_CHECK and any(a['blocker']['kind'] == FAILED_CHECK for a in actions):
+        return False, 'The one-time failed project check retry was spent'
     elif (len(actions) + sum(bool(g.get('automatic')) for g in r.get('ticket_recoveries', [])) >=
           f.watcher.settings.get('max_recoveries_per_ticket', 0)):
         return False, 'Automatic recovery allowance exhausted; explicit recovery required'
@@ -464,11 +553,12 @@ def _run(f, card):
     elif not same_window_scope(f, actions[-1], f.watcher.session):
         raise Halt('Recovery admission is outside saved watcher scope')
     f.ensure_running()
-    if not r.get('blocker'):
-        b = legacy_blocker(f, card, r)
+    if not pending_move:
+        b = effective_blocker(f, card, r, f.watcher.session['policy'].get('blocked_recovery_kinds', []))
         if not b:
             return False
-        f.update(card, blocker=b)
+        if b != r.get('blocker'):
+            f.update(card, blocker=b)
     b = r['blocker']
     actions = r.setdefault('blocked_recoveries', [])
     action = actions[-1] if actions and actions[-1]['phase'] in ('reserved', 'move-intent', 'admitted') else None
@@ -529,7 +619,17 @@ def _run(f, card):
                   'checks': [], 'resumed_stage': 'QA' if b['kind'] == 'missing-check-evidence' else b['stage']}
         if original != b['binding']:
             action['start_binding'] = original
-        if b['kind'] == 'missing-check-evidence' and not b.get('legacy_verification'):
+        if b['kind'] == FAILED_CHECK:
+            prior = b.get('failed_verification') or r.get('verification')
+            try:
+                action['failed_check_id'] = failed_check_id(f, card, prior)
+            except (Stopped, TimedOut):
+                raise
+            except (Halt, OSError, ValueError, KeyError, TypeError):
+                f.update(card, recovery_wait='Failed project check evidence could not be verified')
+                return False
+            action['prior_verification'] = copy.deepcopy(prior)
+        elif b['kind'] == 'missing-check-evidence' and not b.get('legacy_verification'):
             # A failed attempt replaces the active receipt. Keep the original
             # passing checks available for positional reuse on later attempts.
             last = actions[-1] if actions and actions[-1]['blocker'] == b else {}
@@ -554,10 +654,24 @@ def _run(f, card):
             if receipt.get('passed') is not True:
                 record_failed_checks(f, card, action, original)
                 return False
-        elif b['kind'] == 'missing-check-evidence':
-            requested = check_request(f, json.loads(r.get('feedback') or '{}'))
+        elif b['kind'] in ('missing-check-evidence', FAILED_CHECK):
+            requested = ([action['failed_check_id']] if b['kind'] == FAILED_CHECK else
+                         check_request(f, json.loads(r.get('feedback') or '{}')))
             if not ready_for_action(f, card, pins['scope'], drift_reason):
                 return False
+            if b['kind'] == FAILED_CHECK:
+                try:
+                    if f.fetch() != pins['base']:
+                        raise RecoveryPinMismatch('Failed-check retry base changed before execution')
+                    f.assert_remote(card, wt)
+                except ReadConnectionReset:
+                    defer_read(f.watcher, card)
+                    return False
+                except (Stopped, TimedOut):
+                    raise
+                except Halt:
+                    f.update(card, recovery_wait=drift_reason)
+                    return False
             try:
                 current = binding(f, card)
             except (Stopped, TimedOut):
