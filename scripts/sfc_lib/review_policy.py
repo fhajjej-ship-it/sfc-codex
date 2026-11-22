@@ -362,6 +362,8 @@ def plan(f, card, wt, base, *, evaluation=False, consider_inspection=True):
         consolidated, reason = False, 'release and QA-only obligations retain all three lanes'
     elif (f.record(card).get('qa_repair') or {}).get('candidate'):
         consolidated, reason = False, 'saved QA findings require independent rechecking'
+    elif (f.record(card).get('pr_adoptions') or [{}])[-1].get('head') == head:
+        consolidated, reason = False, 'an adopted PR commit requires all independent lanes'
     reduced_behavioral = consolidated and behavioral
     review_first = consolidated and not reduced_behavioral
     obligations = {'review'} | set(p.get('mandatory', []))
