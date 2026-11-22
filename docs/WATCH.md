@@ -156,7 +156,8 @@ are retained; ambiguous writes and old activity latches are never cleared/retrie
 The supervisor keeps its common-git lock throughout, with no background service.
 
 `watch --dry-run` reads the same verified queue/planner without claims, workers,
-setup repair or state writes. Its options show repository/Project, future-ticket
+setup repair or state writes. It can inspect saved evidence while a stop flag is
+present and leaves the flag in place. Its options show repository/Project, future-ticket
 policy, stages, exclusions, hold label and budgets; order and waiting reasons
 show actual selection. It grants no authority. `watch-status` works without a
 GitHub request and includes recorded session/scope, last/next poll, stop/wait

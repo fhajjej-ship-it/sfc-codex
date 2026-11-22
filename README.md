@@ -29,7 +29,7 @@ flowchart LR
     C --> D["Reviewed pull request"]
 ```
 
-SFC **0.1.42** is available as a local Codex plugin.
+SFC **0.1.43** is available as a local Codex plugin.
 
 ## Install in one command
 
@@ -39,7 +39,7 @@ the bundled Codex installer. You can [read the installer](scripts/install_releas
 before running it. Stop any active SFC watcher before upgrading.
 
 ```bash
-curl -fsSLo sfc-install.py https://raw.githubusercontent.com/fhajjej-ship-it/sfc-codex/v0.1.42/scripts/install_release.py && python3 sfc-install.py --version 0.1.42
+curl -fsSLo sfc-install.py https://raw.githubusercontent.com/fhajjej-ship-it/sfc-codex/v0.1.43/scripts/install_release.py && python3 sfc-install.py --version 0.1.43
 ```
 
 Reopen Codex after installation and review the SFC hooks in `/hooks`. Start with
@@ -52,14 +52,14 @@ and Projects access, and an authenticated Codex CLI supporting `exec` with JSON
 output schemas. No API key, Claude installation or external helper skill is
 required by SFC itself; the target project's own tooling must also work.
 
-1. Get **`sfc-0.1.42.zip`** and **`sfc-0.1.42.zip.sha256`** from the
+1. Get **`sfc-0.1.43.zip`** and **`sfc-0.1.43.zip.sha256`** from the
    [GitHub release assets](https://github.com/fhajjej-ship-it/sfc-codex/releases/latest).
    In the download directory, verify, extract, and install. If you used the
    command above, continue to step 2.
 
    ```sh
-   shasum -a 256 -c sfc-0.1.42.zip.sha256
-   unzip sfc-0.1.42.zip
+   shasum -a 256 -c sfc-0.1.43.zip.sha256
+   unzip sfc-0.1.43.zip
    cd sfc
    python3 scripts/install_codex_plugin.py
    ```

@@ -2245,6 +2245,7 @@ only if every item contains non-whitespace text, with no trailing empty string.
         if 'worker_routing' in self.c:
             options['waiting'] = waiting
         if dry_run:
+            from .verification import preview_fingerprints
             from .watch import supervisor_locked
             # Another process may own the common lock. Its timestamped slot
             # receipt is useful for preview, but never grants dispatch authority.
@@ -2256,8 +2257,9 @@ only if every item contains non-whitespace text, with no trailing empty string.
                     self.state = read_json(self.state_path)
                 self.occupied = {v['number']: v for v in self.state.get('occupied', [])}
             try:
-                cards = self.queue_cards()
-                selected, waiting = self.plan(cards)
+                with preview_fingerprints():
+                    cards = self.queue_cards()
+                    selected, waiting = self.plan(cards)
                 return {"dry_run": True, "options": options, "occupied": self.selection_order(list(self.occupied.values())),
                         "occupancy_source": "recorded snapshot under occupied supervisor lock" if recorded else "local scheduler",
                         "max_workers": self.c['max_workers'], "next_eligible": self.next_eligible,

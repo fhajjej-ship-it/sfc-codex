@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime as dt
 from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import itertools
 import json
@@ -21,6 +22,17 @@ RUNTIME_SUITE = 'python3 tests/run_suite.py --suite runtime'
 REMAINING_SUITE = 'python3 tests/run_suite.py --suite remaining'
 # No credentials or arbitrary inherited environment enter reusable commands.
 ENVIRONMENT = {'PATH', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'PYTHONHASHSEED'}
+_preview_fingerprints = ContextVar('sfc_preview_fingerprints', default=False)
+
+
+@contextmanager
+def preview_fingerprints():
+    """Allow bounded evidence reads during read-only planning of stopped work."""
+    token = _preview_fingerprints.set(True)
+    try:
+        yield
+    finally:
+        _preview_fingerprints.reset(token)
 
 
 def digest(value):
@@ -35,7 +47,7 @@ def fingerprint_budget(f=None):
             # Completion-only recovery already has an exact, nonrenewable
             # stop/deadline authority; preserve it past the work cutoff.
             allowance()
-        elif f and f.processes.stopped():
+        elif f and not _preview_fingerprints.get() and f.processes.stopped():
             raise Stopped('Stop requested during verification fingerprinting')
         if time.monotonic() >= deadline:
             raise TimedOut('Verification fingerprinting timed out')
