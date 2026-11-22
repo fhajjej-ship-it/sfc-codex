@@ -29,7 +29,7 @@ flowchart LR
     C --> D["Reviewed pull request"]
 ```
 
-Install SFC **0.1.40** as a local Codex plugin.
+SFC **0.1.40** is available as a local Codex plugin.
 
 ## Install in one command
 
