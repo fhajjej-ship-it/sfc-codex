@@ -169,6 +169,25 @@ class BlockedRecoveryTests(unittest.TestCase):
         self.assertEqual(old['ticket_recoveries'][0]['status'], 'spent')
         self.assertEqual(self.proc.lanes, ['build', 'build'])
         self.factory = Factory(self.root, self.c, self.gh, self.proc)
+        self.proc.stop_path.write_text('operator stop\n')
+        self.proc.shared_stop_path.write_text('shared stop\n')
+        state_before = self.factory.state_path.read_bytes()
+        session_path = common_dir(self.root) / 'sfc-watch.json'
+        session_before = session_path.read_bytes()
+        writes_before = list(self.gh.writes)
+        executions_before = list(self.proc.events)
+        preview = self.factory.watch(dry_run=True, overrides=self.options)
+        self.assertEqual(preview['selected'], [1])
+        self.assertFalse(preview['options']['allow_merge'])
+        self.assertEqual(self.factory.state_path.read_bytes(), state_before)
+        self.assertEqual(session_path.read_bytes(), session_before)
+        self.assertEqual(self.proc.stop_path.read_text(), 'operator stop\n')
+        self.assertEqual(self.proc.shared_stop_path.read_text(), 'shared stop\n')
+        self.assertEqual(self.gh.writes, writes_before)
+        self.assertEqual(self.proc.events, executions_before)
+        from sfc_lib.verification import fingerprint_budget
+        with self.assertRaisesRegex(Stopped, 'Stop requested during verification fingerprinting'):
+            fingerprint_budget(self.factory)()
         self.watch()
         r = self.factory.state['cards']['1']
         self.assertEqual(self.proc.lanes, ['build', 'build', 'qa', 'security', 'review'])
