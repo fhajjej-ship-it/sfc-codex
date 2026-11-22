@@ -349,7 +349,7 @@ class IntegrationTests(unittest.TestCase):
         self.patcher.stop()
         self.temp.cleanup()
 
-    def run_with_worker_settings(self, settings):
+    def run_with_worker_settings(self, settings, **run_options):
         self.c.update(settings)
         self.factory = Factory(self.root, self.c, self.gh, self.proc)
         original = self.proc.execute
@@ -362,7 +362,7 @@ class IntegrationTests(unittest.TestCase):
             return original(argv, cwd, log, timeout, prompt, **kwargs)
 
         with patch.object(self.proc, "execute", side_effect=capture):
-            self.assertEqual(self.factory.run()["outcome"], "waiting")
+            self.assertEqual(self.factory.run(**run_options)["outcome"], "waiting")
         self.assertEqual([lane for lane, _ in workers], ["build", "qa", "security", "review"])
         return workers
 
@@ -380,6 +380,42 @@ class IntegrationTests(unittest.TestCase):
             changed = Factory(self.root, {**self.c, key: value}, self.gh, self.proc)
             self.assertFalse(changed.pinned(issue(), r["head"], r["base"]), key)
         self.assertEqual(self.gh.merges, [])
+
+    def test_waiting_routine_build_uses_medium_fast_with_high_standard_reviews(self):
+        workers = self.run_with_worker_settings(
+            {"model": "gpt-6.2-sol", "reasoning_effort": "high", "service_tier": "default",
+             "worker_routing": {"routine_build_issues": [1]}},
+            include_backlog=True, issues=[1], waiting=True)
+        record = self.factory.record(issue())
+        for lane, argv in workers:
+            with self.subTest(lane=lane):
+                effort, tier = ("medium", "fast") if lane == "build" else ("high", "default")
+                self.assertEqual(argv[argv.index("-m") + 1], "gpt-6.2-sol")
+                self.assertIn(f'model_reasoning_effort="{effort}"', argv)
+                self.assertIn(f'service_tier="{tier}"', argv)
+                dispatch = record["worker_output_budget"][lane]["dispatches"][0]
+                self.assertEqual(dispatch["worker_settings"], {
+                    "model": "gpt-6.2-sol", "reasoning_effort": effort, "service_tier": tier})
+        self.assertEqual(self.gh.merges, [])
+
+    def test_sol_worker_routing_requires_valid_profile_and_waiting_scope(self):
+        from sfc_lib.worker_runtime import lane_settings
+
+        config = {**self.c, "model": "gpt-6.2-sol", "reasoning_effort": "high", "service_tier": "default",
+                  "worker_routing": {"routine_build_issues": [1]}}
+        factory = Factory(self.root, config, self.gh, self.proc)
+        for extra in ({"models": {"qa": "other-model"}}, {"service_tier": "fast"},
+                      {"worker_routing": {"routine_build_issues": [True]}},
+                      {"worker_routing": {"routine_build_issues": [1, 1]}}):
+            with self.subTest(extra=extra), self.assertRaisesRegex(Halt, "worker_routing"):
+                validate_config({**config, **extra})
+        for scope in ({}, {"include_backlog": True, "issues": [1, 2]}):
+            with self.subTest(scope=scope), self.assertRaisesRegex(Halt, "exactly one"):
+                factory.run(waiting=True, **scope)
+        self.assertEqual(lane_settings(config, "build", 1), {
+            "model": "gpt-6.2-sol", "reasoning_effort": "medium", "service_tier": "default"})
+        self.assertEqual(lane_settings(config, "build", 2, waiting=True), {
+            "model": "gpt-6.2-sol", "reasoning_effort": "high", "service_tier": "fast"})
 
     def test_role_model_override_wins_over_worker_default(self):
         workers = self.run_with_worker_settings({"model": "gpt-6.1-sol", "reasoning_effort": "high", "service_tier": "fast",

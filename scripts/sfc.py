@@ -27,7 +27,8 @@ def worker_settings(config):
     return {"model": config.get("model"),
             "reasoning_effort": config.get("reasoning_effort"),
             "service_tier": config.get("service_tier"),
-            "models": config.get("models", {})}
+            "models": config.get("models", {}),
+            **({"worker_routing": config["worker_routing"]} if "worker_routing" in config else {})}
 
 
 def onboard(root, args):
@@ -305,6 +306,7 @@ def main(argv=None):
     start.add_argument("--include-backlog", action="store_true", help="opt in to priority pickup for explicitly scoped Backlog/Ready issues")
     start.add_argument("--issue", type=int, action="append", default=[], help="authorized issue number; repeat; required with --include-backlog")
     start.add_argument("--allow-merge", action="store_true", help="authorize configured automatic merges for this run")
+    start.add_argument("--waiting", action="store_true", help="request Fast Build for one scoped, routed issue")
     watch = sub.add_parser("watch", help="explicit bounded foreground session for current and future Backlog/Ready work")
     choice = watch.add_mutually_exclusive_group()
     choice.add_argument("--start", action="store_true", help="authorize a NEW finite queue session")
@@ -479,7 +481,7 @@ def main(argv=None):
                                            allow_merge=args.allow_merge, overrides=overrides)
                 else:
                     result = factory.run(allow_merge=args.allow_merge, dry_run=args.dry_run,
-                                         include_backlog=args.include_backlog, issues=args.issue)
+                                         include_backlog=args.include_backlog, issues=args.issue, waiting=args.waiting)
             else:
                 cards = factory.gh.cards()
                 if args.command == "lint":

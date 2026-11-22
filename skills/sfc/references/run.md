@@ -68,6 +68,10 @@ mode is per-run only and grants no merge authority or project-config changes.
 Pending local merge journals must also be within that authorized issue scope;
 otherwise preview reports the blocker and execution halts before recovery writes.
 
+For a project with [GPT-6.2 Sol worker routing](../../../docs/CONFIGURATION.md),
+add `--waiting` to both commands when the user asks for a Fast Build or says
+they are waiting on this one ticket. Reviews and unattended runs use Standard.
+
 Monitor the command to completion using the host's process tools; provide
 meaningful updates while it works. Do not detach and call dispatch success.
 New-project onboarding defaults to `merge_policy: auto`; existing saved
