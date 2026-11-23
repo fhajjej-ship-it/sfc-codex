@@ -328,7 +328,9 @@ def main(argv=None):
     tracked_update.add_argument('--event', required=True)
     tracked_update.add_argument('--stage', choices=chat_tracking.STAGES, required=True)
     tracked_update.add_argument('--summary', required=True)
-    tracked_update.add_argument('--pr', type=int)
+    tracked_pr = tracked_update.add_mutually_exclusive_group()
+    tracked_pr.add_argument('--pr', type=int, help='pull request number in the tracked issue repository')
+    tracked_pr.add_argument('--pr-url', help='exact GitHub pull request URL, including from another repository')
     tracked_update.add_argument('--local-done', action='store_true')
     tracked_status = tracking.add_parser('status', help='read the local issue binding and pending milestones')
     select_task = tracked_status.add_mutually_exclusive_group(required=True)
@@ -510,7 +512,8 @@ def main(argv=None):
                                              delivery=args.delivery)
             elif args.action == 'update':
                 result = chat_tracking.update(root, config, task=args.task, event_id=args.event, stage=args.stage,
-                                              summary=args.summary, pr=args.pr, local_done=args.local_done)
+                                              summary=args.summary, pr=args.pr, pr_url=args.pr_url,
+                                              local_done=args.local_done)
             elif args.action == 'status':
                 result = chat_tracking.status(root, config, task=args.task, prefix=args.prefix)
             else:

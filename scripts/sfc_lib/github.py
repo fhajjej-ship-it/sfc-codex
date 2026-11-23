@@ -574,10 +574,26 @@ class GitHub:
             return None
         return pr
 
-    def chat_pr(self, number):
+    def chat_pr(self, number, *, repository=None):
         """Read the linked PR and its checks without listing its changed files."""
-        return self.call("pr", "view", number, "--repo", self.c["repo"], "--json",
+        return self.call("pr", "view", number, "--repo", repository or self.c["repo"], "--json",
                          "number,url,state,baseRefName,headRefOid,isDraft,statusCheckRollup")
+
+    def verify_chat_link_visibility(self, repository):
+        issue_owner, issue_name = self.c["repo"].split("/")
+        pr_owner, pr_name = repository.split("/")
+        result = self.graphql("""query($issueOwner:String!,$issueName:String!,$prOwner:String!,$prName:String!) {
+          issueRepo:repository(owner:$issueOwner,name:$issueName) { nameWithOwner visibility }
+          prRepo:repository(owner:$prOwner,name:$prName) { nameWithOwner visibility }
+        }""", {"issueOwner": issue_owner, "issueName": issue_name, "prOwner": pr_owner, "prName": pr_name})
+        for alias, slug in (("issueRepo", self.c["repo"]), ("prRepo", repository)):
+            repo = result.get(alias)
+            if (not isinstance(repo, dict) or not isinstance(repo.get("nameWithOwner"), str) or
+                    repo["nameWithOwner"].casefold() != slug.casefold() or
+                    repo.get("visibility") not in ("PUBLIC", "PRIVATE", "INTERNAL")):
+                raise Halt("Repository visibility could not be verified for the cross-repository PR link")
+        if result["issueRepo"]["visibility"] == "PUBLIC" and result["prRepo"]["visibility"] != "PUBLIC":
+            raise Halt("A public issue cannot publish a nonpublic pull request link")
 
     def pr(self, number):
         pr = self.call("pr", "view", number, "--repo", self.c["repo"], "--json",

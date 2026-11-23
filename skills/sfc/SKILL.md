@@ -29,8 +29,9 @@ plugin code and skills read-only.
    transcripts, credentials, logs and private paths local. During a GitHub
    outage, keep working and retry pending updates at the next checkpoint.
 3. When authorized to open a PR, open it as a draft during QA after the
-   focused checks pass. Record the PR number with the QA milestone so GitHub
-   CI can run while verification continues. Move to Review as the change is
+   focused checks pass. Record the exact returned URL with `track update
+   --pr-url` and sync the QA milestone so the issue links to the draft.
+   GitHub CI can run while verification continues. Move to Review as the change is
    reviewed and follow the repository's normal checks and merge permissions.
    Sync the task after CI or a merge. SFC reports the latest observed PR and
    CI state and records Done when GitHub confirms the merge. For a verified
