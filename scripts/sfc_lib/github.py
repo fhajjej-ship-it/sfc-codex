@@ -543,6 +543,37 @@ class GitHub:
             raise Halt("PR identity or state could not be verified")
         return pr["state"]
 
+    def chat_closing_pr(self, issue):
+        """Read the single GitHub-linked PR that actually closed this issue."""
+        data = self.graphql("""query($issue:ID!) {
+          node(id:$issue) { ... on Issue {
+            id number state repository { nameWithOwner }
+            closedByPullRequestsReferences(first:1,includeClosedPrs:true) {
+              totalCount
+              nodes { id number url state baseRefName headRefOid isDraft repository { nameWithOwner } }
+            }
+            timelineItems(last:1,itemTypes:[CLOSED_EVENT]) {
+              nodes { ... on ClosedEvent { closer { ... on PullRequest { id } } } }
+            }
+          } }
+        }""", {"issue": issue["id"]})["node"]
+        if (not isinstance(data, dict) or data.get("id") != issue["id"]
+                or data.get("number") != issue["number"]
+                or data.get("repository") != {"nameWithOwner": self.c["repo"]}):
+            raise Halt("GitHub closing pull request read did not identify the tracked issue")
+        if data["state"] != "CLOSED":
+            return None
+        links = data["closedByPullRequestsReferences"]
+        closures = data["timelineItems"]["nodes"]
+        if links["totalCount"] != 1 or len(links["nodes"]) != 1 or len(closures) != 1:
+            return None
+        pr = links["nodes"][0]
+        closer = (closures[0] or {}).get("closer") or {}
+        if (not isinstance(pr, dict) or not pr.get("id")
+                or closer.get("id") != pr["id"] or pr.get("state") != "MERGED"):
+            return None
+        return pr
+
     def chat_pr(self, number):
         """Read the linked PR and its checks without listing its changed files."""
         return self.call("pr", "view", number, "--repo", self.c["repo"], "--json",
