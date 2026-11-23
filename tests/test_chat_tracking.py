@@ -20,6 +20,8 @@ from sfc_lib.ticket_coordination import ticket_directory
 
 class TrackingGitHub(PickupGitHub):
     chat_closing_pr = GitHub.chat_closing_pr
+    chat_pr = GitHub.chat_pr
+    verify_chat_link_visibility = GitHub.verify_chat_link_visibility
 
     def __init__(self, root, cards):
         super().__init__(root, cards)
@@ -28,24 +30,33 @@ class TrackingGitHub(PickupGitHub):
         self.pull = {'number': 41, 'baseRefName': 'main', 'state': 'OPEN', 'isDraft': False,
                      'url': 'https://github.com/example/app/pull/41', 'statusCheckRollup': []}
         self.pr_reads = []
+        self.issue_visibility = 'PRIVATE'
+        self.pr_visibility = 'PUBLIC'
         self.closing_links = {'totalCount': 0, 'nodes': []}
         self.closer = None
 
     def graphql(self, query, variables):
+        if 'issueRepo:repository' in query:
+            return {
+                'issueRepo': {'nameWithOwner': variables['issueOwner'] + '/' + variables['issueName'],
+                              'visibility': self.issue_visibility},
+                'prRepo': {'nameWithOwner': variables['prOwner'] + '/' + variables['prName'],
+                           'visibility': self.pr_visibility},
+            }
         if 'closedByPullRequestsReferences' in query:
             issue = next(item for item in self.items if item['id'] == variables['issue'])
             return {'node': {**issue, 'closedByPullRequestsReferences': self.closing_links,
                              'timelineItems': {'nodes': [{'closer': self.closer}]}}}
         return super().graphql(query, variables)
 
-    def chat_pr(self, number):
-        self.pr_reads.append(number)
-        return self.pull.copy()
-
     def move(self, card, status):
         fixtures.FakeGitHub.move(self, card, status)
 
     def call(self, *args, **kwargs):
+        if args[:2] == ('pr', 'view'):
+            number, repository = args[2], args[4]
+            self.pr_reads.append(number if repository == self.c['repo'] else (repository, number))
+            return self.pull.copy()
         if args[0] == 'api' and '/comments' in args[1]:
             if '--method' not in args:
                 return [self.comments.copy()]
@@ -174,6 +185,82 @@ class ChatTrackingTests(unittest.TestCase):
         self.gh.pull.update(state='MERGED', baseRefName='develop')
         self.assertEqual(self.sync()['state'], 'pending')
         self.assertEqual(self.gh.items[0]['status'], 'Review')
+
+    def test_cross_repo_draft_links_on_issue_and_reconciles_manual_merge(self):
+        url = 'https://github.com/example/public-app/pull/41'
+        self.gh.github_status['item-1'] = 'in-progress'
+        self.gh.pull.update(url=url, isDraft=True, headRefOid='a' * 40,
+                            statusCheckRollup=[{'status': 'IN_PROGRESS', 'conclusion': ''}])
+        self.start()
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(sfc.main(['--root', str(self.root), 'track', 'update',
+                                       '--task', self.task, '--event', 'draft', '--stage', 'QA',
+                                       '--summary', 'Observed QA', '--pr-url', url]), 0)
+        self.assertEqual(json.loads(output.getvalue())['pr_url'], url)
+        with patch.object(self.gh, 'call', wraps=self.gh.call) as calls:
+            self.gh.lose_note_response = True
+            self.assertEqual(self.sync()['pending'], ['draft'])
+            self.gh.lose_note_response = False
+            qa = self.sync()
+        self.assertEqual((qa['state'], qa['board_stage'], qa['pr_url']), ('synced', 'QA', url))
+        self.assertEqual((qa['pull_request']['draft'], qa['pull_request']['ci']), (True, 'running'))
+        self.assertEqual(self.gh.pr_reads, [('example/public-app', 41)] * 2)
+        self.assertEqual(len(self.gh.comments), 1)
+        self.assertIn(url, self.gh.comments[0]['body'])
+        posts = [call.args[:4] for call in calls.call_args_list if '--method' in call.args and 'POST' in call.args]
+        self.assertEqual(posts, [('api', 'repos/example/app/issues/1/comments', '--method', 'POST')])
+
+        self.update('reviewed', 'Review')
+        self.gh.pull.update(state='CLOSED', isDraft=False)
+        self.assertEqual(self.sync()['board_stage'], 'Review')
+        self.assertEqual(self.gh.github_status['item-1'], 'in-progress')
+        self.gh.pull.update(state='MERGED', statusCheckRollup=[{'status': 'COMPLETED', 'conclusion': 'SUCCESS'}])
+        done = self.sync()
+        self.assertEqual((done['state'], done['board_stage'], done['pending']), ('synced', 'Done', []))
+        self.assertEqual(self.gh.github_status['item-1'], 'done')
+        self.assertEqual(self.gh.merges, [])
+        self.assertEqual(self.sync(), done)
+
+    def test_pr_url_refuses_wrong_repository_or_target_branch(self):
+        self.start()
+        self.sync()
+        url = 'https://github.com/example/public-app/pull/41'
+        self.update('draft', 'QA', pr_url=url)
+        self.gh.pull['state'] = 'MERGED'
+        self.assertEqual(self.sync()['board_stage'], 'Building')
+        self.gh.pull.update(url=url, baseRefName='develop')
+        self.assertEqual(self.sync()['board_stage'], 'Building')
+        self.assertEqual(self.gh.writes, [(1, 'Building')])
+        self.assertEqual(self.gh.comments, [])
+        with self.assertRaisesRegex(Halt, 'another pull request'):
+            self.update('other', 'QA', pr=41)
+
+    def test_pr_url_is_exact_and_cannot_change_a_local_delivery(self):
+        self.start(delivery='local-only')
+        for value in ('https://git.example.com/example/app/pull/41',
+                      'https://github.com/example/app/pull/41?token=fixture',
+                      'https://github.com/example/app/issues/41',
+                      'https://github.com/example/../pull/41'):
+            with self.subTest(url=value), self.assertRaisesRegex(Halt, 'exact https'):
+                self.update('draft', 'QA', pr_url=value)
+        with self.assertRaisesRegex(Halt, 'local-only'):
+            self.update('draft', 'QA', pr_url='https://github.com/example/public-app/pull/41')
+        self.assertEqual(self.gh.pr_reads, [])
+
+    def test_public_issue_cannot_publish_a_private_pr_link(self):
+        self.start()
+        self.sync()
+        url = 'https://github.com/example/other-app/pull/41'
+        self.gh.pull.update(url=url, isDraft=True)
+        self.gh.issue_visibility = 'PUBLIC'
+        self.gh.pr_visibility = 'PRIVATE'
+        self.update('draft', 'QA', pr_url=url)
+        self.assertEqual(self.sync()['pending'], ['draft'])
+        self.assertEqual(self.gh.writes, [(1, 'Building')])
+        self.assertEqual(self.gh.comments, [])
+        self.gh.pr_visibility = 'PUBLIC'
+        self.assertEqual(self.sync()['board_stage'], 'QA')
+        self.assertIn(url, self.gh.comments[0]['body'])
 
     def set_cross_repo_closure(self):
         pr = {**self.gh.pull, 'id': 'public-pr-41', 'state': 'MERGED', 'isDraft': False,
@@ -344,6 +431,7 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertIn('Show the task title, delivery choice and verified issue link', instructions)
         self.assertIn('--delivery pr-required', instructions)
         self.assertIn('--delivery local-only', instructions)
+        self.assertIn('track update --pr-url', instructions)
         runtime = SessionRuntime(self.root, environ={})
         self.assertEqual(runtime.attach(event, native_thread=event['session_id'])['state'], 'tracking')
         auth_path = common_dir(self.root) / 'sfc-autostart.json'

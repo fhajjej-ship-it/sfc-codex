@@ -45,10 +45,11 @@ python3 "<plugin>/scripts/sfc.py" --root "<repo>" track sync --task chat-example
 ```
 
 After focused checks pass, open an authorized draft PR during QA so GitHub CI
-can run during verification. For a PR in the tracked issue's repository,
-attach its number to the QA milestone with `--pr`. For a PR in another
-repository, link it from the issue's **Development** sidebar on GitHub so the
-merge closes the issue. Include the PR URL in the QA summary.
+can run during verification. Pass the exact URL returned by GitHub with
+`--pr-url`. SFC verifies the PR and its configured target branch, then adds
+the link to the issue's QA milestone. This works across repositories and
+keeps the link on the issue side. A public issue can link only to a public PR.
+Existing `--pr NUMBER` links still refer to the tracked issue's repository.
 
 Record Review when the change is reviewed. A genuine blocker can be recorded as
 Blocked and later followed by Building or QA. PR-required work reaches Done
@@ -58,16 +59,19 @@ choices were introduced retain their original completion rules.
 
 ```sh
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track update \
-  --task chat-example-export --event draft --stage QA --pr 42 \
+  --task chat-example-export --event draft --stage QA \
+  --pr-url https://github.com/owner/code-repo/pull/42 \
   --summary "Focused CSV export tests passed. A draft PR is open for CI."
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track sync --task chat-example-export
 ```
 
-Each sync refreshes a PR recorded with `--pr` and reports the observed CI state.
+Each sync refreshes the recorded PR and reports the observed CI state.
 After a manual merge, the next sync verifies the PR's repository and base,
 then writes and reads back Done in SFC Status and the standard Status field
 when present. A PR closed without merging leaves the card at its current
-milestone. For a QA or Review task without a saved PR number, SFC can
+milestone. GitHub's native Development link is available from the issue
+sidebar if you want GitHub itself to close the issue on merge. For a QA or
+Review task without a recorded PR, SFC can
 reconcile a cross-repository merge when GitHub confirms that the single
 linked PR merged into the configured base and closed the tracked issue.
 Run sync at a chat checkpoint to reflect changes made on GitHub.

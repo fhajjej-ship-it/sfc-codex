@@ -17,6 +17,7 @@ from .work_types import TYPES
 STAGES = ('Building', 'QA', 'Review', 'Blocked', 'Done')
 DELIVERY_MODES = ('pr-required', 'local-only')
 ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,69}')
+PR_URL = re.compile(r'https://github\.com/([A-Za-z0-9-]+/[A-Za-z0-9_.-]+)/pull/([1-9][0-9]{0,9})')
 
 
 def chat_mode(root):
@@ -77,7 +78,7 @@ def local_lock(path):
 def view(record):
     latest = record['events'][-1]
     return {'task': record['task'], 'title': record['title'], 'issue': record.get('issue'),
-            'delivery': record.get('delivery'), 'pr': record.get('pr'),
+            'delivery': record.get('delivery'), 'pr': record.get('pr'), 'pr_url': record.get('pr_url'),
             'pull_request': record.get('pull_request'),
             'desired_stage': latest['stage'],
             'latest_summary': latest['summary'] or record['summary'],
@@ -143,14 +144,30 @@ def start(root, config, *, task, title, summary, work_type=None, acceptance=(), 
     return view(record)
 
 
-def update(root, config, *, task, event_id, stage, summary, pr=None, local_done=False):
+def pr_target(repository, number, url):
+    if url is None:
+        if number is not None:
+            return repository.casefold(), number
+        return None
+    match = PR_URL.fullmatch(url) if isinstance(url, str) else None
+    if not match or match[1].split('/')[1] in ('.', '..'):
+        raise Halt('Use an exact https://github.com/OWNER/REPOSITORY/pull/NUMBER URL')
+    return match[1].casefold(), int(match[2])
+
+
+def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None, local_done=False):
     path = task_path(root, task)
     if not isinstance(event_id, str) or ID.fullmatch(event_id) is None or event_id == 'start' or stage not in STAGES:
         raise Halt('Use a new event ID and a supported chat milestone')
     summary = public_text(summary, 'Milestone evidence')
     if pr is not None and (type(pr) is not int or pr <= 0):
         raise Halt('Use a positive pull request number')
-    event = {'id': event_id, 'stage': stage, 'summary': summary, 'pr': pr, 'local_done': local_done}
+    if pr is not None and pr_url is not None:
+        raise Halt('Provide one pull request number or URL')
+    target = pr_target(config['repo'], pr, pr_url)
+    if pr_url is not None:
+        pr_url = pr_url.casefold()
+    event = {'id': event_id, 'stage': stage, 'summary': summary, 'pr': pr, 'pr_url': pr_url, 'local_done': local_done}
     with local_lock(path.with_suffix('.lock')):
         record = read_task(path, config)
         for previous in record['events']:
@@ -160,19 +177,23 @@ def update(root, config, *, task, event_id, stage, summary, pr=None, local_done=
                 return view(record)
         if record['events'][-1]['stage'] == 'Done':
             raise Halt('This chat task is complete')
-        if pr and record.get('pr') and record['pr'] != pr:
+        bound = pr_target(config['repo'], record.get('pr'), record.get('pr_url'))
+        if target and bound and target != bound:
             raise Halt('The chat task is already tied to another pull request')
         delivery = record.get('delivery')
-        if delivery == 'local-only' and pr is not None:
+        if delivery == 'local-only' and target:
             raise Halt('This task is recorded as local-only; it cannot link a pull request')
-        linked = pr or record.get('pr')
+        linked = target or bound
         if delivery == 'pr-required' and (local_done or stage == 'Done' and not linked):
             raise Halt('This task requires a linked merged pull request before Done')
         if (local_done and (stage != 'Done' or linked) or
                 stage == 'Done' and not (local_done or linked)):
             raise Halt('Done requires a linked merged pull request or an explicit local completion')
-        if linked:
-            record['pr'] = linked
+        if not bound:
+            if pr_url is not None:
+                record['pr_url'] = pr_url
+            elif pr is not None:
+                record['pr'] = pr
         record['events'].append(event)
         write_json(path, record)
     return view(record)
@@ -309,11 +330,13 @@ def sync(gh, root, task):
         if scope(gh.c) != record['scope']:
             raise Halt('Tracking configuration changed before sync')
         number = record.get('pr')
+        pr_url = record.get('pr_url')
+        target = pr_target(gh.c['repo'], number, pr_url)
         latest = record['events'][-1]
-        follow_pr = number is not None and latest['stage'] != 'Done'
+        follow_pr = target is not None and latest['stage'] != 'Done'
         pending = any(not event.get('synced') for event in record['events'])
         closing_pr_url = latest.get('closing_pr_url') if pending else None
-        follow_closure = (number is None and record.get('delivery') != 'local-only'
+        follow_closure = (target is None and record.get('delivery') != 'local-only'
                           and (latest['stage'] in ('QA', 'Review') or closing_pr_url is not None))
         if not (follow_pr or follow_closure or pending):
             return {'state': 'synced', **view(record)}
@@ -321,7 +344,13 @@ def sync(gh, root, task):
             if not record.get('issue'):
                 bind_issue(gh, root, path, record)
             pull = None
-            if number is not None:
+            if pr_url is not None:
+                repository, pull_number = target
+                pull = observe_pr(gh.chat_pr(pull_number, repository=repository), pull_number,
+                                  record['scope']['base_branch'], repository)
+                if repository != gh.c['repo'].casefold() and (pending or pull['state'] == 'MERGED'):
+                    gh.verify_chat_link_visibility(repository)
+            elif number is not None:
                 pull = observe_pr(gh.chat_pr(number), number, record['scope']['base_branch'], gh.c['repo'])
             elif follow_closure:
                 pull = observe_closing_pr(gh, record)
@@ -343,7 +372,8 @@ def sync(gh, root, task):
                     continue
                 if pull and event['stage'] == 'Done' and pull['state'] != 'MERGED':
                     raise Halt('The linked pull request has not merged')
-                url = pull['url'] if pull and (event.get('pr') or event['stage'] in ('Review', 'Done')) else None
+                url = pull['url'] if pull and (event.get('pr') or event.get('pr_url') or
+                                               event['stage'] in ('Review', 'Done')) else None
                 card = verified_card(gh, record)
                 if event.get('closing_pr_url') and card['state'] != 'CLOSED':
                     raise Halt('The tracked issue reopened before Done synced')
