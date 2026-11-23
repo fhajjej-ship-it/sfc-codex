@@ -12,7 +12,7 @@ import test_factory as fixtures
 import sfc
 from test_pickup import PickupGitHub, ticket
 from sfc_lib import autostart, chat_tracking
-from sfc_lib.common import Halt, common_dir, exclusive, git, load_config, run, write_json
+from sfc_lib.common import Halt, common_dir, exclusive, git, load_config, read_json, run, write_json
 from sfc_lib.session_runtime import SessionRuntime, request_attachment
 from sfc_lib.ticket_coordination import ticket_directory
 
@@ -56,10 +56,10 @@ class ChatTrackingTests(unittest.TestCase):
         self.gh.c = self.c
         self.task = 'chat-example-feature'
 
-    def start(self, *, issue=1):
+    def start(self, *, issue=1, delivery='pr-required'):
         return chat_tracking.start(self.root, self.c, task=self.task, title='Add export',
                                    summary='Export the selected rows', issue=issue, work_type='Feature',
-                                   acceptance=['Selected rows export to CSV'])
+                                   acceptance=['Selected rows export to CSV'], delivery=delivery)
 
     def update(self, event_id, stage, **values):
         return chat_tracking.update(self.root, self.c, task=self.task, event_id=event_id, stage=stage,
@@ -163,6 +163,29 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.sync()['state'], 'pending')
         self.assertEqual(self.gh.items[0]['status'], 'Review')
 
+    def test_pr_required_decision_is_saved_and_prevents_local_completion(self):
+        with self.assertRaisesRegex(Halt, 'Choose --delivery'):
+            self.start(delivery=None)
+        self.assertEqual(self.start()['delivery'], 'pr-required')
+        self.assertEqual(self.start(delivery=None)['delivery'], 'pr-required')
+        with self.assertRaisesRegex(Halt, 'cannot change its delivery choice'):
+            self.start(delivery='local-only')
+        with self.assertRaisesRegex(Halt, 'requires a linked merged pull request'):
+            self.update('local', 'Done', local_done=True)
+        with self.assertRaisesRegex(Halt, 'requires a linked merged pull request'):
+            self.update('done', 'Done')
+        self.assertEqual(self.sync()['board_stage'], 'Building')
+
+    def test_pre_upgrade_task_can_resume_without_a_delivery_decision(self):
+        self.start(delivery='local-only')
+        path = chat_tracking.task_path(self.root, self.task)
+        record = read_json(path)
+        del record['delivery']
+        write_json(path, record)
+        self.assertIsNone(self.start(delivery=None)['delivery'])
+        self.update('local', 'Done', local_done=True)
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+
     def test_github_failure_queues_updates_and_note_readback_prevents_duplicate(self):
         self.start()
         self.update('tests', 'QA')
@@ -176,12 +199,13 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.gh.writes, [(1, 'Building'), (1, 'QA')])
 
     def test_created_issue_binding_uses_the_same_creation_receipt_after_restart(self):
-        self.start(issue=None)
-        self.start(issue=None)
+        self.start(issue=None, delivery='local-only')
+        self.start(issue=None, delivery='local-only')
 
         def create(gh, root, **request):
             self.assertEqual(request['request_id'], 'chat-' + self.task)
             self.assertEqual(request['work_type'], 'Feature')
+            self.assertIn('## Delivery\nLocal only.', request['body'])
             path = ticket_directory(root) / (request['request_id'] + '.json')
             write_json(path, {'issue': {'id': gh.items[0]['id'], 'number': 1},
                               'item_id': gh.items[0]['item_id'], 'project': 'p', 'repo': gh.c['repo']})
@@ -212,11 +236,13 @@ class ChatTrackingTests(unittest.TestCase):
             return json.loads(result.stdout)
 
         track('start', '--task', self.task, '--type', 'Bug', '--title', 'Fix export',
-              '--summary', 'Preserve the selection', '--acceptance', 'Export only selected rows')
+              '--delivery', 'local-only', '--summary', 'Preserve the selection',
+              '--acceptance', 'Export only selected rows')
         track('update', '--task', self.task, '--event', 'verified', '--stage', 'Done',
               '--summary', 'Focused regression test passed', '--local-done')
         status = track('status', '--prefix', 'chat-example')['tasks'][0]
         self.assertEqual(status['desired_stage'], 'Done')
+        self.assertEqual(status['delivery'], 'local-only')
         self.assertEqual(status['latest_summary'], 'Focused regression test passed')
         self.assertIsNone(status['board_stage'])
         self.assertEqual(status['pending'], ['start', 'verified'])
@@ -234,7 +260,9 @@ class ChatTrackingTests(unittest.TestCase):
         output = run([sys.executable, str(command), '--attachment'], self.root, input=json.dumps(event), env=env)
         instructions = json.loads(output.stdout)['hookSpecificOutput']['additionalContext']
         self.assertIn('record the task before editing', instructions)
-        self.assertIn('Show the task title and verified issue link in chat', instructions)
+        self.assertIn('Show the task title, delivery choice and verified issue link', instructions)
+        self.assertIn('--delivery pr-required', instructions)
+        self.assertIn('--delivery local-only', instructions)
         runtime = SessionRuntime(self.root, environ={})
         self.assertEqual(runtime.attach(event, native_thread=event['session_id'])['state'], 'tracking')
         auth_path = common_dir(self.root) / 'sfc-autostart.json'
@@ -268,7 +296,9 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual((attachment['state'], Path(attachment['root'])), ('tracking', self.root.resolve()))
 
     def test_local_review_can_move_to_done_without_a_pull_request(self):
-        self.start()
+        self.start(delivery='local-only')
+        with self.assertRaisesRegex(Halt, 'local-only'):
+            self.update('draft', 'QA', pr=41)
         for event, stage in [('tests', 'QA'), ('review', 'Review'), ('finished', 'Done')]:
             self.update(event, stage, local_done=stage == 'Done')
             self.assertEqual(self.sync()['board_stage'], stage)

@@ -29,12 +29,16 @@ Use the chat prefix supplied by the hook to find work already recorded.
 Use a stable task ID for each independent change. If the user names an issue
 on the configured Project, pass `--issue NUMBER` when starting. Otherwise the
 first sync creates a typed issue with observable acceptance criteria.
-Routine questions and status checks need no ticket. Keep transcripts,
-credentials, private paths and raw logs local.
+Choose the delivery mode at the start. Use `--delivery pr-required` for
+changes intended for the shared repository and `--delivery local-only` for
+work delivered locally. SFC retains that choice across turns. Routine questions
+and status checks need no ticket. Keep transcripts, credentials, private paths
+and raw logs local.
 
 ```sh
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track start \
   --task chat-example-export --type Feature --title "Export selected rows" \
+  --delivery pr-required \
   --summary "Add CSV export for the current selection." \
   --acceptance "Only the selected rows appear in the CSV."
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track sync --task chat-example-export
@@ -43,8 +47,10 @@ python3 "<plugin>/scripts/sfc.py" --root "<repo>" track sync --task chat-example
 After focused checks pass, open an authorized draft PR during QA so GitHub CI
 can run during verification. Attach its number to the QA milestone. Record
 Review when the change is reviewed. A genuine blocker can be recorded as
-Blocked and later followed by Building or QA. For verified local delivery,
-record the evidence and use `--local-done`.
+Blocked and later followed by Building or QA. PR-required work reaches Done
+after verification of the linked merge. For local-only work, record the
+verification and use `--local-done`. Existing tasks saved before delivery
+choices were introduced retain their original completion rules.
 
 ```sh
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track update \

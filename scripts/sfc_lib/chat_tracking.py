@@ -15,6 +15,7 @@ from .ticket_coordination import creation_lock, recorded_request
 from .work_types import TYPES
 
 STAGES = ('Building', 'QA', 'Review', 'Blocked', 'Done')
+DELIVERY_MODES = ('pr-required', 'local-only')
 ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,69}')
 
 
@@ -76,7 +77,8 @@ def local_lock(path):
 def view(record):
     latest = record['events'][-1]
     return {'task': record['task'], 'title': record['title'], 'issue': record.get('issue'),
-            'pr': record.get('pr'), 'pull_request': record.get('pull_request'),
+            'delivery': record.get('delivery'), 'pr': record.get('pr'),
+            'pull_request': record.get('pull_request'),
             'desired_stage': latest['stage'],
             'latest_summary': latest['summary'] or record['summary'],
             'board_stage': record.get('board_stage'),
@@ -89,6 +91,8 @@ def read_task(path, config):
     record = read_json(path)
     if record.get('version') != 1 or record.get('scope') != scope(config):
         raise Halt('Tracking scope changed. Review the retained task before syncing.')
+    if 'delivery' in record and record['delivery'] not in DELIVERY_MODES:
+        raise Halt('Saved delivery choice is invalid. Inspect the retained task.')
     return record
 
 
@@ -101,7 +105,7 @@ def status(root, config, *, task=None, prefix=None):
     return {'tasks': [view(read_task(path, config)) for path in sorted(directory(root).glob(prefix + '-*.json'))]}
 
 
-def start(root, config, *, task, title, summary, work_type=None, acceptance=(), issue=None):
+def start(root, config, *, task, title, summary, work_type=None, acceptance=(), issue=None, delivery=None):
     path = task_path(root, task)
     binding = scope(config)
     title = public_text(title, 'Title', limit=160)
@@ -122,14 +126,18 @@ def start(root, config, *, task, title, summary, work_type=None, acceptance=(), 
             record = read_task(path, config)
             if any(record[k] != v for k, v in intent.items()):
                 raise Halt('The task ID is already bound to different work')
+            if delivery is not None and delivery != record.get('delivery'):
+                raise Halt('Restarting a task cannot change its delivery choice')
             return view(record)
+        if delivery not in DELIVERY_MODES:
+            raise Halt('Choose --delivery pr-required or --delivery local-only before starting new work')
         if issue is not None:
             for existing in directory(root).glob('*.json'):
                 other = read_json(existing)
                 if (other.get('scope') == binding and issue in
                         (other.get('requested_issue'), (other.get('issue') or {}).get('number'))):
                     raise Halt('This issue already has a chat task. Reuse it: ' + other['task'])
-        record = {'version': 1, 'scope': binding, 'task': task, 'since': now(), **intent,
+        record = {'version': 1, 'scope': binding, 'task': task, 'since': now(), 'delivery': delivery, **intent,
                   'events': [{'id': 'start', 'stage': 'Building', 'summary': None}]}
         write_json(path, record)
     return view(record)
@@ -154,7 +162,12 @@ def update(root, config, *, task, event_id, stage, summary, pr=None, local_done=
             raise Halt('This chat task is complete')
         if pr and record.get('pr') and record['pr'] != pr:
             raise Halt('The chat task is already tied to another pull request')
+        delivery = record.get('delivery')
+        if delivery == 'local-only' and pr is not None:
+            raise Halt('This task is recorded as local-only; it cannot link a pull request')
         linked = pr or record.get('pr')
+        if delivery == 'pr-required' and (local_done or stage == 'Done' and not linked):
+            raise Halt('This task requires a linked merged pull request before Done')
         if (local_done and (stage != 'Done' or linked) or
                 stage == 'Done' and not (local_done or linked)):
             raise Halt('Done requires a linked merged pull request or an explicit local completion')
@@ -173,6 +186,9 @@ def bind_issue(gh, root, path, record):
         if receipt_path is None:
             body = record['summary'] + '\n\n## Acceptance criteria\n' + '\n'.join(
                 '- [ ] ' + value for value in record['acceptance'])
+            delivery = record.get('delivery')
+            if delivery is not None:
+                body += '\n\n## Delivery\n' + ('Pull request required.' if delivery == 'pr-required' else 'Local only.')
             result = create_ticket(gh, root, request_id=request, title=record['title'], body=body,
                                    priority='P2', work_type=record['work_type'],
                                    reason='Chat task tracking. Priority is for board visibility.',

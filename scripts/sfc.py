@@ -321,6 +321,8 @@ def main(argv=None):
     tracked_start.add_argument('--type', dest='work_type', choices=tuple(TYPES))
     tracked_start.add_argument('--acceptance', action='append', default=[])
     tracked_start.add_argument('--issue', type=int)
+    tracked_start.add_argument('--delivery', choices=chat_tracking.DELIVERY_MODES,
+                               help='required when starting a new task')
     tracked_update = tracking.add_parser('update', help='queue an observed milestone and its evidence')
     tracked_update.add_argument('--task', required=True)
     tracked_update.add_argument('--event', required=True)
@@ -504,7 +506,8 @@ def main(argv=None):
                 result = chat_tracking.enable(root)
             elif args.action == 'start':
                 result = chat_tracking.start(root, config, task=args.task, title=args.title, summary=args.summary,
-                                             work_type=args.work_type, acceptance=args.acceptance, issue=args.issue)
+                                             work_type=args.work_type, acceptance=args.acceptance, issue=args.issue,
+                                             delivery=args.delivery)
             elif args.action == 'update':
                 result = chat_tracking.update(root, config, task=args.task, event_id=args.event, stage=args.stage,
                                               summary=args.summary, pr=args.pr, local_done=args.local_done)
