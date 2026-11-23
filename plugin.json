@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "sfc",
-  "version": "0.1.45",
+  "version": "0.2.0",
   "description": "A Codex-only software factory: GitHub Project issues to verified pull requests through Build, QA, security and review.",
   "author": {
     "name": "Farouk Hajjej"
