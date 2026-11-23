@@ -2,7 +2,7 @@
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "sfc",
   "version": "0.2.0",
-  "description": "A Codex-only software factory: GitHub Project issues to verified pull requests through Build, QA, security and review.",
+  "description": "Track work from Codex chat on your GitHub Project.",
   "author": {
     "name": "Farouk Hajjej"
   },
@@ -19,17 +19,17 @@
       "hooks": "./hooks/hooks.json",
       "interface": {
         "displayName": "SFC",
-        "shortDescription": "A software factory built exclusively for Codex.",
-        "longDescription": "Run GitHub Project issues through isolated builds, independent QA, PR security checks and review, with saved evidence and controlled merging.",
+        "shortDescription": "Track work from Codex chat on your GitHub Project.",
+        "longDescription": "Record implementation, checks, review, pull requests, and blockers on the board as work happens in Codex chat.",
         "developerName": "Farouk Hajjej",
         "category": "Developer Tools",
         "brandColor": "#145C54",
         "logo": "./assets/sfc-logo.png",
         "composerIcon": "./assets/sfc-icon.png",
         "defaultPrompt": [
-          "Use SFC to onboard this repository.",
-          "Use SFC to show the factory status.",
-          "Use SFC to run the ready issues in this project."
+          "Set up SFC chat tracking for this repository.",
+          "Show the SFC milestone for my current task.",
+          "Help me implement this change in chat and track it with SFC."
         ]
       },
       "mcpServers": "./.mcp.json"

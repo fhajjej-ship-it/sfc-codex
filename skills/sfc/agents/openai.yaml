@@ -1,4 +1,4 @@
 interface:
   display_name: "SFC"
-  short_description: "Run the Codex software factory"
+  short_description: "Track Codex chat work on GitHub"
   default_prompt: "Use $sfc:sfc for this task."

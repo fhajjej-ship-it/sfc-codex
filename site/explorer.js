@@ -36,19 +36,19 @@
   }
 
   const source = 'https://github.com/fhajjej-ship-it/sfc-codex/blob/main/';
-  const design = 'docs/DESIGN.md';
+  const design = 'docs/CHAT-TRACKING.md';
   const skill = (name) => 'skills/' + name + '/SKILL.md';
   const nodes = {
     collect: [36, 52, 'Collect feedback', 'On demand', 'sfc-collect', 'Collect and verify reports before shaping a work ticket.', 'Public reports and optional connected sources.', 'Evidence and proposed tickets for triage.', skill('sfc-collect')],
-    issue: [36, 166, 'GitHub issue', 'Input', 'Ready', 'Scope the work with acceptance criteria and make it eligible on the project board.', 'User outcome and acceptance criteria.', 'An eligible issue on your GitHub Project.', design],
-    watch: [214, 166, 'Supervisor', 'Coordinator', 'sfc', 'Schedule eligible tickets across concurrent slots and check evidence before changing GitHub state.', 'Eligible issues, project policy, and saved run state.', 'An isolated worktree and pinned candidate for each active ticket.', skill('sfc')],
-    build: [392, 166, 'Build', 'Factory lane', 'sfc-build', 'Implement the issue in a separate worktree and prepare the candidate for verification.', 'Issue scope and previous findings.', 'A candidate change for project checks.', skill('sfc-build')],
-    checks: [570, 166, 'Project checks', 'Verification', 'test evidence', 'Run configured checks and reuse valid results when their inputs and policy match.', 'Candidate source and configured check commands.', 'Passing receipts or actionable failures.', 'docs/VERIFICATION-REUSE.md'],
-    qa: [570, 52, 'QA', 'Factory lane', 'sfc-qa', 'Independently assess the candidate against every acceptance criterion.', 'Candidate and project-check receipts.', 'Acceptance evidence or precise findings.', skill('sfc-qa')],
-    security: [570, 280, 'Security', 'Factory lane', 'sfc-security', 'Inspect the candidate and its trust boundaries for security regressions.', 'Candidate changes and verification evidence.', 'Security verdict or actionable findings.', skill('sfc-security')],
-    review: [748, 166, 'Final review', 'Factory lane', 'sfc-review', 'Review the exact candidate and completed evidence before it can merge.', 'Candidate, required checks, and review findings.', 'An independent review verdict.', skill('sfc-review')],
-    merge: [926, 166, 'Checked merge', 'Decision', 'reviewed PR', 'Confirm the candidate and required checks are current. Merge only with repository authority.', 'Reviewed PR and exact head and base.', 'Merged change and completion evidence.', design],
-    release: [926, 52, 'Release', 'Optional', 'package and publish', 'Prepare a versioned package from merged source. Publication requires the configured authority.', 'Merged source, release policy, and applicable evidence.', 'Verified ZIP, checksum, and GitHub release.', design],
+    issue: [36, 166, 'GitHub issue', 'Input', 'Ready', 'Scope the work in Codex chat and link an issue with acceptance criteria.', 'User request and acceptance criteria.', 'A linked issue on your GitHub Project.', design],
+    watch: [214, 166, 'Codex chat', 'Execution', 'your selected model', 'Build, test, and review the change you asked for in this chat. SFC syncs milestones to the board.', 'Your request, repo instructions, and current code.', 'Changes and verified milestones.', skill('sfc')],
+    build: [392, 166, 'Build', 'In chat', 'sfc-build', 'Implement the requested change using the project’s usual workflow.', 'Issue scope and previous findings.', 'A candidate change for project checks.', skill('sfc-build')],
+    checks: [570, 166, 'Project checks', 'Verification', 'test evidence', 'Run the relevant project checks and record the results.', 'Candidate source and configured check commands.', 'Passing receipts or actionable failures.', design],
+    qa: [570, 52, 'QA', 'In chat', 'sfc-qa', 'Check the change against the acceptance criteria.', 'Candidate and project-check receipts.', 'Acceptance evidence or precise findings.', skill('sfc-qa')],
+    security: [570, 280, 'Security', 'In chat', 'sfc-security', 'Inspect the candidate and its trust boundaries for security regressions.', 'Candidate changes and verification evidence.', 'Security verdict or actionable findings.', skill('sfc-security')],
+    review: [748, 166, 'Final review', 'In chat', 'sfc-review', 'Review the exact candidate and completed evidence before it can merge.', 'Candidate, required checks, and review findings.', 'Review results and a linked PR when opened.', skill('sfc-review')],
+    merge: [926, 166, 'Checked merge', 'Decision', 'reviewed PR', 'Merge through the repository’s normal process. SFC verifies the linked PR before it records Done.', 'Reviewed PR and exact head and base.', 'Merged change and completion evidence.', design],
+    release: [926, 52, 'Release', 'Optional', 'package and publish', 'Publish through the repository’s release process when authorized.', 'Merged source, release policy, and applicable evidence.', 'Verified ZIP, checksum, and GitHub release.', design],
     visualize: [748, 280, 'Visual recap', 'On demand', 'sfc-visual', 'Build an HTML diagram or recap of the implementation and its evidence.', 'Source changes and available receipts.', 'A standalone visual artifact.', skill('sfc-visual')],
     sync: [214, 280, 'Git sync', 'On demand', 'sfc-git-sync', 'Review and integrate selected Git changes through a deliberate sync.', 'Selected changes and the remote branch.', 'Reviewed commits and an optional authorized push.', skill('sfc-git-sync')],
     refine: [392, 280, 'UI refine', 'On demand', 'sfc-ui-refine', 'Refine a specific page or component through browser review and focused edits.', 'A page, component, or visual request.', 'A focused implementation with visual checks.', skill('sfc-ui-refine')],
@@ -245,11 +245,11 @@
     keyboard: 'Improve keyboard navigation',
     guide: 'Update the workspace guide',
   };
-  const queued = ['Ready', 'Ready for pickup', 'The issue has acceptance criteria and is eligible for pickup.'];
-  const building = ['Building', 'Worktree created', 'Codex implements the ticket in an isolated worktree.'];
+  const queued = ['Ready', 'Scope ready', 'The issue has acceptance criteria. Work starts when you ask in Codex chat.'];
+  const building = ['Building', 'Chat starts work', 'Codex implements the requested change in chat.'];
   const qa = ['QA', 'Project checks and QA', 'Configured checks produce test evidence. QA verifies acceptance criteria and Security checks relevant risks.'];
-  const review = ['Review', 'Independent review', 'The reviewer checks the candidate and completed evidence at the same commit.'];
-  const merged = ['Done', 'Verified merge', 'The supervisor confirms the required checks and review evidence, then merges the authorized PR.'];
+  const review = ['Review', 'Review in chat', 'Codex reviews the change and the completed checks.'];
+  const merged = ['Done', 'Verified merge', 'The PR merges through the repository’s normal process. SFC verifies that merge and records Done.'];
 
   const frames = [
     ['Queue ready', {
@@ -264,12 +264,12 @@
       access: ['Blocked', 'Maintainer decision needed', 'The export permission policy needs a human decision. Other tickets continue.'],
     }],
     ['Repair and merge', {
-      export: ['Building', 'Same PR repaired', 'Codex fixes the CSV edge case on the same PR within its repair budget.'],
+      export: ['Building', 'Same PR repaired', 'Codex fixes the CSV edge case in chat and updates the same PR.'],
       retry: merged,
       keyboard: building,
     }],
     ['Parallel checks', {
-      export: ['QA', 'Affected checks revalidated', 'SFC reruns affected checks and reuses passing evidence where the inputs still match.'],
+      export: ['QA', 'Affected checks revalidated', 'Codex reruns the relevant checks and SFC records the results.'],
       keyboard: qa,
     }],
     ['Parallel review', { export: review, keyboard: review }],
