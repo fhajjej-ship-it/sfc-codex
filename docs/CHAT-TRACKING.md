@@ -45,8 +45,12 @@ python3 "<plugin>/scripts/sfc.py" --root "<repo>" track sync --task chat-example
 ```
 
 After focused checks pass, open an authorized draft PR during QA so GitHub CI
-can run during verification. Attach its number to the QA milestone. Record
-Review when the change is reviewed. A genuine blocker can be recorded as
+can run during verification. For a PR in the tracked issue's repository,
+attach its number to the QA milestone with `--pr`. For a PR in another
+repository, link it from the issue's **Development** sidebar on GitHub so the
+merge closes the issue. Include the PR URL in the QA summary.
+
+Record Review when the change is reviewed. A genuine blocker can be recorded as
 Blocked and later followed by Building or QA. PR-required work reaches Done
 after verification of the linked merge. For local-only work, record the
 verification and use `--local-done`. Existing tasks saved before delivery
@@ -59,7 +63,7 @@ python3 "<plugin>/scripts/sfc.py" --root "<repo>" track update \
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track sync --task chat-example-export
 ```
 
-Each sync refreshes the active linked PR and reports the observed CI state.
+Each sync refreshes a PR recorded with `--pr` and reports the observed CI state.
 After a manual merge, the next sync verifies the PR's repository and base,
 then writes and reads back Done in SFC Status and the standard Status field
 when present. A PR closed without merging leaves the card at its current
