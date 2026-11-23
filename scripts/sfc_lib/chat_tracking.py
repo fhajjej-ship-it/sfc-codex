@@ -9,11 +9,13 @@ import re
 
 from . import pickup
 from .common import Busy, Halt, common_dir, exclusive, git, load_config, now, read_json, repo_root, write_json
+from .factory import check_explanation, checks_pass
 from .priority import create_ticket
 from .ticket_coordination import creation_lock, recorded_request
 from .work_types import TYPES
 
 STAGES = ('Building', 'QA', 'Review', 'Blocked', 'Done')
+DELIVERY_MODES = ('pr-required', 'local-only')
 ID = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,69}')
 
 
@@ -75,7 +77,9 @@ def local_lock(path):
 def view(record):
     latest = record['events'][-1]
     return {'task': record['task'], 'title': record['title'], 'issue': record.get('issue'),
-            'pr': record.get('pr'), 'desired_stage': latest['stage'],
+            'delivery': record.get('delivery'), 'pr': record.get('pr'),
+            'pull_request': record.get('pull_request'),
+            'desired_stage': latest['stage'],
             'latest_summary': latest['summary'] or record['summary'],
             'board_stage': record.get('board_stage'),
             'pending': [event['id'] for event in record['events'] if not event.get('synced')]}
@@ -87,6 +91,8 @@ def read_task(path, config):
     record = read_json(path)
     if record.get('version') != 1 or record.get('scope') != scope(config):
         raise Halt('Tracking scope changed. Review the retained task before syncing.')
+    if 'delivery' in record and record['delivery'] not in DELIVERY_MODES:
+        raise Halt('Saved delivery choice is invalid. Inspect the retained task.')
     return record
 
 
@@ -99,7 +105,7 @@ def status(root, config, *, task=None, prefix=None):
     return {'tasks': [view(read_task(path, config)) for path in sorted(directory(root).glob(prefix + '-*.json'))]}
 
 
-def start(root, config, *, task, title, summary, work_type=None, acceptance=(), issue=None):
+def start(root, config, *, task, title, summary, work_type=None, acceptance=(), issue=None, delivery=None):
     path = task_path(root, task)
     binding = scope(config)
     title = public_text(title, 'Title', limit=160)
@@ -120,14 +126,18 @@ def start(root, config, *, task, title, summary, work_type=None, acceptance=(), 
             record = read_task(path, config)
             if any(record[k] != v for k, v in intent.items()):
                 raise Halt('The task ID is already bound to different work')
+            if delivery is not None and delivery != record.get('delivery'):
+                raise Halt('Restarting a task cannot change its delivery choice')
             return view(record)
+        if delivery not in DELIVERY_MODES:
+            raise Halt('Choose --delivery pr-required or --delivery local-only before starting new work')
         if issue is not None:
             for existing in directory(root).glob('*.json'):
                 other = read_json(existing)
                 if (other.get('scope') == binding and issue in
                         (other.get('requested_issue'), (other.get('issue') or {}).get('number'))):
                     raise Halt('This issue already has a chat task. Reuse it: ' + other['task'])
-        record = {'version': 1, 'scope': binding, 'task': task, 'since': now(), **intent,
+        record = {'version': 1, 'scope': binding, 'task': task, 'since': now(), 'delivery': delivery, **intent,
                   'events': [{'id': 'start', 'stage': 'Building', 'summary': None}]}
         write_json(path, record)
     return view(record)
@@ -152,7 +162,12 @@ def update(root, config, *, task, event_id, stage, summary, pr=None, local_done=
             raise Halt('This chat task is complete')
         if pr and record.get('pr') and record['pr'] != pr:
             raise Halt('The chat task is already tied to another pull request')
+        delivery = record.get('delivery')
+        if delivery == 'local-only' and pr is not None:
+            raise Halt('This task is recorded as local-only; it cannot link a pull request')
         linked = pr or record.get('pr')
+        if delivery == 'pr-required' and (local_done or stage == 'Done' and not linked):
+            raise Halt('This task requires a linked merged pull request before Done')
         if (local_done and (stage != 'Done' or linked) or
                 stage == 'Done' and not (local_done or linked)):
             raise Halt('Done requires a linked merged pull request or an explicit local completion')
@@ -171,6 +186,9 @@ def bind_issue(gh, root, path, record):
         if receipt_path is None:
             body = record['summary'] + '\n\n## Acceptance criteria\n' + '\n'.join(
                 '- [ ] ' + value for value in record['acceptance'])
+            delivery = record.get('delivery')
+            if delivery is not None:
+                body += '\n\n## Delivery\n' + ('Pull request required.' if delivery == 'pr-required' else 'Local only.')
             result = create_ticket(gh, root, request_id=request, title=record['title'], body=body,
                                    priority='P2', work_type=record['work_type'],
                                    reason='Chat task tracking. Priority is for board visibility.',
@@ -204,14 +222,25 @@ def verified_card(gh, record):
     return pickup.card(gh, issue['item_id'], pinned, expected=issue)
 
 
-def verified_pr(gh, number, base, *, merged=False):
-    pr = gh.pr(number)
+def observe_pr(gh, number, base):
+    pr = gh.chat_pr(number)
     expected = f"https://github.com/{gh.c['repo']}/pull/{number}"
-    if (pr.get('number') != number or pr.get('baseRefName') != base or
-            pr.get('url', '').casefold() != expected.casefold() or
-            pr.get('state') not in (('MERGED',) if merged else ('OPEN', 'MERGED'))):
-        raise Halt('The linked pull request or required merge could not be verified')
-    return expected
+    if (not isinstance(pr, dict) or type(pr.get('number')) is not int or pr['number'] != number or
+            pr.get('baseRefName') != base or not isinstance(pr.get('url'), str) or
+            pr['url'].casefold() != expected.casefold() or
+            pr.get('state') not in ('OPEN', 'CLOSED', 'MERGED')):
+        raise Halt('The linked pull request repository, base, or state could not be verified')
+    checks = pr.get('statusCheckRollup')
+    if not isinstance(checks, list) or any(not isinstance(check, dict) for check in checks):
+        ci = 'unknown'
+    elif not checks:
+        ci = 'not-reported'
+    elif checks_pass(pr):
+        ci = 'passed'
+    else:
+        ci = 'failed' if check_explanation(pr)['code'] == 'ci_failed' else 'running'
+    return {'url': expected, 'state': pr['state'], 'draft': pr.get('isDraft'),
+            'head': pr.get('headRefOid'), 'ci': ci, 'observed_at': now()}
 
 
 def sync_stage(gh, path, record, card, event):
@@ -268,18 +297,28 @@ def sync(gh, root, task):
         record = read_task(path, load_config(root))
         if scope(gh.c) != record['scope']:
             raise Halt('Tracking configuration changed before sync')
-        if all(event.get('synced') for event in record['events']):
+        number = record.get('pr')
+        latest = record['events'][-1]
+        follow_pr = number and latest['stage'] != 'Done'
+        if not follow_pr and all(event.get('synced') for event in record['events']):
             return {'state': 'synced', **view(record)}
         try:
             if not record.get('issue'):
                 bind_issue(gh, root, path, record)
+            pull = observe_pr(gh, number, record['scope']['base_branch']) if number else None
+            if pull:
+                record['pull_request'] = pull
+                if follow_pr and pull['state'] == 'MERGED':
+                    # This ID is outside the public milestone-ID alphabet. Save it before any board write.
+                    record['events'].append({'id': 'sfc:pr-merged', 'stage': 'Done', 'pr': number,
+                                             'summary': 'GitHub confirmed the linked pull request merged.'})
+                    write_json(path, record)
             for event in record['events']:
                 if event.get('synced'):
                     continue
-                number = event.get('pr') or record.get('pr')
-                url = None
-                if number and event['stage'] in ('Review', 'Done'):
-                    url = verified_pr(gh, number, record['scope']['base_branch'], merged=event['stage'] == 'Done')
+                if pull and event['stage'] == 'Done' and pull['state'] != 'MERGED':
+                    raise Halt('The linked pull request has not merged')
+                url = pull['url'] if pull and (event.get('pr') or event['stage'] in ('Review', 'Done')) else None
                 sync_stage(gh, path, record, verified_card(gh, record), event)
                 sync_note(gh, path, record, event, url)
                 event['synced'] = now()

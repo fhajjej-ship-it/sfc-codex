@@ -19,16 +19,23 @@ plugin code and skills read-only.
 1. For an actionable feature, fix, maintenance, refactor or documentation
    request, use `track status --prefix PREFIX` to find an existing task. For
    new work, use `track start` with a stable task ID, work type and observable
-   acceptance criteria. Link the specific issue the user named with `--issue`.
-   Sync Building before editing. Show the verified issue link in chat.
+   acceptance criteria. Decide where the result needs to land. Choose
+   `--delivery pr-required` for changes intended for the shared repo or
+   `--delivery local-only` for verified work that stays local. Link the
+   named issue with `--issue`. Sync Building before editing and show the
+   verified issue link and saved delivery choice in chat.
 2. Work in the current chat. As checks, review, a PR or a genuine blocker
    occurs, record actual evidence with `track update` and sync. Keep
    transcripts, credentials, logs and private paths local. During a GitHub
    outage, keep working and retry pending updates at the next checkpoint.
-3. Open or merge a PR only with the user's authority and the repository's
-   normal verification. Record the PR number so SFC can verify the merge
-   before syncing Done. For a verified change delivered locally, use
-   `--local-done`. Explain any pending board updates in the chat.
+3. When authorized to open a PR, open it as a draft during QA after the
+   focused checks pass. Record the PR number with the QA milestone so GitHub
+   CI can run while verification continues. Move to Review as the change is
+   reviewed and follow the repository's normal checks and merge permissions.
+   Sync the task after CI or a merge. SFC reports the latest observed PR and
+   CI state and records Done when GitHub confirms the merge. For a verified
+   local-only delivery, use `--local-done`. A PR-required task needs a linked
+   verified merge to reach Done. Explain pending updates in chat.
 
 Routine questions and status checks need no ticket. See
 [chat tracking](../../docs/CHAT-TRACKING.md) for commands and examples.

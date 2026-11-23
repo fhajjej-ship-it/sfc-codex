@@ -29,32 +29,41 @@ Use the chat prefix supplied by the hook to find work already recorded.
 Use a stable task ID for each independent change. If the user names an issue
 on the configured Project, pass `--issue NUMBER` when starting. Otherwise the
 first sync creates a typed issue with observable acceptance criteria.
-Routine questions and status checks need no ticket. Keep transcripts,
-credentials, private paths and raw logs local.
+Choose the delivery mode at the start. Use `--delivery pr-required` for
+changes intended for the shared repository and `--delivery local-only` for
+work delivered locally. SFC retains that choice across turns. Routine questions
+and status checks need no ticket. Keep transcripts, credentials, private paths
+and raw logs local.
 
 ```sh
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track start \
   --task chat-example-export --type Feature --title "Export selected rows" \
+  --delivery pr-required \
   --summary "Add CSV export for the current selection." \
   --acceptance "Only the selected rows appear in the CSV."
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track sync --task chat-example-export
 ```
 
-Record tests, pull requests and review milestones as they occur. A locally
-delivered change can go from Building straight to Done. A genuine blocker
-can be recorded as Blocked and later followed by Building or QA. Attach the
-PR number when recording a pull request in Review. A task with a linked PR reaches Done once
-the tracker confirms it merged into the configured base. For work delivered
-locally, record the evidence and pass `--local-done`.
+After focused checks pass, open an authorized draft PR during QA so GitHub CI
+can run during verification. Attach its number to the QA milestone. Record
+Review when the change is reviewed. A genuine blocker can be recorded as
+Blocked and later followed by Building or QA. PR-required work reaches Done
+after verification of the linked merge. For local-only work, record the
+verification and use `--local-done`. Existing tasks saved before delivery
+choices were introduced retain their original completion rules.
 
 ```sh
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track update \
-  --task chat-example-export --event tests --stage QA --summary "The CSV export tests passed."
-python3 "<plugin>/scripts/sfc.py" --root "<repo>" track update \
-  --task chat-example-export --event reviewed --stage Review --pr 42 \
-  --summary "PR opened for review. Project checks passed."
+  --task chat-example-export --event draft --stage QA --pr 42 \
+  --summary "Focused CSV export tests passed. A draft PR is open for CI."
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track sync --task chat-example-export
 ```
+
+Each sync refreshes the active linked PR and reports the observed CI state.
+After a manual merge, the next sync verifies the PR's repository and base,
+then writes and reads back Done in SFC Status and the standard Status field
+when present. A PR closed without merging leaves the card at its current
+milestone. Run sync at a chat checkpoint to reflect changes made on GitHub.
 
 `start` and `update` save milestones locally before any GitHub call.
 Sync Building before editing and sync later milestones as they happen.
