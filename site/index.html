@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Software Factory Codex is an open-source Codex plugin for GitHub Projects. Turn scoped issues into tested, independently reviewed pull requests.">
+  <meta name="description" content="Software Factory Codex is an open-source Codex plugin for GitHub Projects. Track Codex chat work, checks, and pull requests on a GitHub Project.">
   <meta name="theme-color" content="#0c1513">
   <title>SFC · Open-source Codex plugin for GitHub Projects</title>
   <link rel="canonical" href="https://fhajjej-ship-it.github.io/sfc-codex/">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://fhajjej-ship-it.github.io/sfc-codex/">
   <meta property="og:site_name" content="Software Factory Codex">
-  <meta property="og:title" content="SFC · From GitHub issue to reviewed pull request">
+  <meta property="og:title" content="SFC · Track Codex chat work on GitHub Projects">
   <meta property="og:description" content="An open-source Codex plugin for GitHub Projects. Watch the board demo or install SFC to try one ticket.">
   <meta property="og:image" content="https://fhajjej-ship-it.github.io/sfc-codex/social-card.png">
   <meta property="og:image:type" content="image/png">
@@ -44,8 +44,8 @@
     <section class="hero" aria-labelledby="title">
       <div class="hero-copy">
         <p class="project-name">Software Factory Codex</p>
-        <h1 id="title">From GitHub issue to reviewed pull request.</h1>
-        <p class="lead">Give Codex a scoped issue with acceptance criteria. SFC builds it in an isolated worktree, runs your checks, and brings you a pull request with independent review.</p>
+        <h1 id="title">See Codex chat work on your GitHub Project.</h1>
+        <p class="lead">Ask Codex in chat to build a feature or fix a bug. SFC records the work, checks, and pull request on your board as they happen.</p>
         <div class="hero-actions">
           <a class="button primary" href="#install">Install SFC</a>
           <a class="button secondary" href="#board-demo">Try the board demo</a>
@@ -65,19 +65,19 @@
         <ol class="steps">
           <li>
             <span class="step-marker" aria-hidden="true"></span>
-            <div><h3>Ready</h3><p>Scope the issue on your GitHub Project.</p></div>
+            <div><h3>Ready</h3><p>Describe the change in Codex chat. SFC links the issue.</p></div>
           </li>
           <li>
             <span class="step-marker" aria-hidden="true"></span>
-            <div><h3>Build</h3><p>Codex implements it in an isolated worktree.</p></div>
+            <div><h3>Build</h3><p>The current chat implements the change.</p></div>
           </li>
           <li>
             <span class="step-marker" aria-hidden="true"></span>
-            <div><h3>QA, Security, and Review</h3><p>Project checks and independent reviews verify the change.</p></div>
+            <div><h3>Checks and review</h3><p>Codex runs project checks and reviews the change. SFC records the results.</p></div>
           </li>
           <li class="step-last">
             <span class="step-marker" aria-hidden="true"></span>
-            <div><h3>Reviewed pull request</h3><p>You choose whether SFC can merge it.</p></div>
+            <div><h3>Reviewed pull request</h3><p>You control the merge. SFC records Done once it verifies the merge.</p></div>
           </li>
         </ol>
       </section>
@@ -86,7 +86,7 @@
     <section class="explorer-section" id="skill-map" aria-labelledby="skill-map-title">
       <div class="section-heading">
         <h2 id="skill-map-title">Explore the skill map</h2>
-        <p>Watch a ticket move from issue to release. Select any step to inspect its inputs, outputs, and source.</p>
+        <p>Follow chat work from request through review and merge. Select a step to see what it reads and records.</p>
       </div>
       <div class="map" id="map" hidden>
         <div class="map-tools">
@@ -127,8 +127,8 @@
 
     <section class="explorer-section" id="board-demo" aria-labelledby="board-demo-title">
       <div class="section-heading">
-        <h2 id="board-demo-title">Watch tickets run together</h2>
-        <p>See how SFC runs several tickets through the same board. Select a card to see its checks, repairs, or blocker.</p>
+        <h2 id="board-demo-title">Watch tickets update together</h2>
+        <p>See how work in several Codex chats appears on one board. Select a card to see its checks, fixes, or blocker.</p>
       </div>
       <div class="demo" id="demo" hidden>
         <div class="demo-tools">
@@ -187,11 +187,11 @@
         </div>
         <div>
           <dt>Who controls what gets merged?</dt>
-          <dd>You can merge reviewed pull requests yourself or authorize SFC to merge eligible ones. SFC checks the current candidate and required evidence before it merges.</dd>
+          <dd>Merges follow your repository’s normal process. SFC verifies that a linked pull request merged before it records Done.</dd>
         </div>
         <div>
           <dt>What happens when QA finds a problem?</dt>
-          <dd>SFC can repair eligible findings on the same pull request and repeat the affected checks. A ticket that needs a human decision can wait in Blocked while other eligible tickets continue.</dd>
+          <dd>Codex can fix a finding in the same chat and rerun the relevant checks. SFC records the fix or blocker as it happens.</dd>
         </div>
       </dl>
     </section>

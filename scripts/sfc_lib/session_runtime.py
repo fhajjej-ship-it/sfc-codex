@@ -40,6 +40,12 @@ def request_attachment(event, environ=None):
         return {'state': 'ignored'}
     end = time.monotonic() + 3
     with bounded_io(lambda: max(0.01, end - time.monotonic())):
+        from . import chat_tracking
+        root = chat_tracking.project_root(event['cwd'])
+        if chat_tracking.chat_mode(root):
+            return {'state': 'tracking', 'root': str(root),
+                    'prefix': 'chat-' + autostart.digest(event['session_id'])[:16],
+                    'turn': autostart.digest(event.get('turn_id'))[:12]}
         root = autostart.configured_root(event['cwd'])
         common, path, status_path = autostart.paths(root)
     auth = read_json(path) if path.exists() else {}
@@ -113,16 +119,20 @@ class SessionRuntime:
             if (not isinstance(native_thread, str) or not native_thread.strip() or
                     native_thread != event['session_id']):
                 return {'state': 'ignored', 'detail': 'Native root connection identity is missing or mismatched'}
-            if not supported():
-                return self.report('unavailable', 'Lifetime cleanup is supported only on macOS', work='paused')
             try:
                 end = time.monotonic() + 3
                 with bounded_io(lambda: max(0.01, end - time.monotonic())):
                     launch_root = repo_root(self.cwd)
                     if repo_root(event['cwd']) != launch_root:
                         raise Halt('Attachment cwd differs from the native MCP launch checkout')
+                    from . import chat_tracking
+                    root = chat_tracking.project_root(launch_root)
+                    if chat_tracking.chat_mode(root):
+                        return self.report('tracking', 'This project records work started in chat', work='unattached')
                     root = autostart.configured_root(launch_root)
                     common, path, _ = autostart.paths(root)
+                if not supported():
+                    return self.report('unavailable', 'Lifetime cleanup is supported only on macOS', work='paused')
                 host = autostart.digest(event['session_id'])
                 auth = read_json(path) if path.exists() else {}
                 if not isinstance(auth, dict):

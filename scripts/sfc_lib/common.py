@@ -173,6 +173,8 @@ def activity_zone(name="UTC"):
 def validate_config(c):
     if not isinstance(c, dict) or c.get("version") != 1:
         raise Halt("Unsupported SFC config version")
+    if c.get("workflow_mode", "factory") not in ("chat", "factory"):
+        raise Halt("workflow_mode must be chat or factory")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", c.get("repo", "")):
         raise Halt("repo must be owner/name")
     if not isinstance(c.get("base_branch"), str) or not c["base_branch"] or c["base_branch"].startswith("-"):
@@ -183,7 +185,7 @@ def validate_config(c):
         raise Halt("project.owner is required")
     positive(project.get("number"), "project.number")
     commands = c.get("verify_commands")
-    if not isinstance(commands, list) or not commands or any(
+    if not isinstance(commands, list) or (not commands and c.get('workflow_mode') != 'chat') or any(
             not isinstance(v, str) or not v.strip() or "\0" in v for v in commands):
         raise Halt("verify_commands must contain nonempty project-owned commands")
     from .verification import validate as validate_verification

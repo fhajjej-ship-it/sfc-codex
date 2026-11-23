@@ -85,11 +85,12 @@ def serve(runtime, source, sink):
                         # raw errors, paths and caller prose remain local.
                         state = value.get('state')
                         if state not in ('pending', 'observing', 'waiting', 'paused', 'ended',
-                                         'ignored', 'disabled', 'unavailable'):
+                                         'ignored', 'disabled', 'unavailable', 'tracking'):
                             state = 'unavailable'
                         value = {'hookSpecificOutput': {
                             'hookEventName': arguments['hook_event_name'],
-                            'additionalContext': 'SFC session attachment: ' + state +
+                            'additionalContext': '' if state == 'tracking' else
+                                'SFC session attachment: ' + state +
                                 '. Use session_status for current observation and work state.'}}
                 elif name == 'session_status' and not arguments:
                     value = runtime.status()

@@ -26,6 +26,10 @@ class AutoStartTests(unittest.TestCase):
 
     def setUp(self):
         watch_fixtures.WatchTests.setUp(self)
+        # Historical supervisor contracts remain covered by the legacy adapter.
+        mode = patch('sfc_lib.chat_tracking.chat_mode', return_value=False)
+        mode.start()
+        self.addCleanup(mode.stop)
         self.root = self.root.resolve()
         self.c['watch'] = {**self.options, 'excluded_issues': [15], 'hold_label': 'custom-hold'}
         write_json(self.root / '.sfc/config.json', self.c)
@@ -550,14 +554,13 @@ class HookContractTests(unittest.TestCase):
         for path in ('plugin.json', '.codex-plugin/plugin.json'):
             self.assertEqual(read_json(root / path)['version'], __version__)
 
-    def test_bundled_hook_uses_supported_async_lifecycle_without_detaching(self):
+    def test_bundled_hooks_register_chat_tracking_instead_of_watcher_startup(self):
         root = Path(__file__).resolve().parents[1]
-        hooks = read_json(root / 'hooks/hooks.json')['hooks']['SessionStart']
-        entry = next(h for g in hooks for h in g['hooks'] if h.get('command', '').endswith('--autostart'))
-        self.assertTrue(entry['async'])
-        self.assertGreater(entry['timeout'], 86400 + 30)
-        self.assertTrue(entry['command'].endswith('--autostart'))
-        self.assertNotIn('bypass', entry['command'])
+        hooks = read_json(root / 'hooks/hooks.json')['hooks']
+        commands = [h['command'] for groups in hooks.values() for group in groups
+                    for h in group['hooks'] if h['type'] == 'command']
+        self.assertTrue(any(command.endswith('--attachment') for command in commands))
+        self.assertFalse(any(command.endswith('--autostart') for command in commands))
 
     def test_worker_marker_reaches_actual_headless_child_and_owned_cancellation(self):
         import tempfile

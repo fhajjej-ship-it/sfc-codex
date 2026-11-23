@@ -13,7 +13,8 @@ import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from sfc_lib.factory import secret_problem
-from sfc_lib.autostart import configured_root, launch
+from sfc_lib.autostart import launch
+from sfc_lib.chat_tracking import project_root
 
 
 def context(cwd):
@@ -21,7 +22,7 @@ def context(cwd):
                             capture_output=True, text=True, timeout=5)
     if result.returncode:
         return None
-    config = configured_root(cwd) / ".sfc/config.json"
+    config = project_root(cwd) / ".sfc/config.json"
     if not config.exists():
         return None
     return config.parent.parent, json.loads(config.read_text())
@@ -38,7 +39,7 @@ def inside(path, root, cwd):
     return value.resolve().is_relative_to(root.resolve())
 
 
-def check(event, root, config):
+def check(event, root, config, *, chat=False):
     tool = event.get("tool_name")
     data = event.get("tool_input", {})
     command = data.get("command", data.get("cmd", data.get("patch", ""))) if isinstance(data, dict) else data
@@ -68,8 +69,8 @@ def check(event, root, config):
         if any(v in ("--force", "--force-with-lease", "--mirror", "--all", "-f") for v in args):
             return "Force or broad Git push blocked"
         if not args or args == ["origin"] or any(v.split(":")[-1].removeprefix("refs/heads/") in (base, "main", "master") for v in args):
-            return "Protected or implicit-base push blocked; use the SFC merge gate"
-    if "worktree" in tokens and "add" in tokens:
+            return "Protected or implicit-base push blocked; use a pull request"
+    if not chat and "worktree" in tokens and "add" in tokens:
         at = tokens.index("add") + 1
         args = tokens[at:]
         while args and args[0].startswith("-"):
@@ -95,6 +96,22 @@ def main():
     if '--attachment' in sys.argv:
         from sfc_lib.session_runtime import request_attachment
         result = request_attachment(event)
+        if result['state'] == 'tracking':
+            plugin = Path(__file__).resolve().parents[1]
+            command = shlex.join(['python3', str(plugin / 'scripts/sfc.py'), '--root', result['root'], 'track'])
+            slot = result['prefix'] + '-' + result['turn']
+            print(json.dumps({'hookSpecificOutput': {'hookEventName': event['hook_event_name'],
+                  'additionalContext':
+                    'This project uses SFC chat tracking. Work directly in Codex without starting a separate worker. For an actionable feature, bug fix, '
+                    'maintenance, refactor or documentation change, record the task before editing. '
+                    f'Use {command} status --prefix {result["prefix"]} to reuse an existing chat task. '
+                    f'For new work, use {command} start --task {slot}. Run the relevant tool with --help for its arguments, '
+                    'or read the SFC skill. Sync Building before editing, then record actual QA, PR review, blockers and completion. '
+                    'Show the task title and verified issue link in chat once available. Use the latest recorded '
+                    'milestone for progress and distinguish pending updates from the last verified board stage. '
+                    'Sync at execution checkpoints. If GitHub is unavailable, continue the work and retry the saved task '
+                    'at a later checkpoint. Use repository-safe summaries only. Routine questions need no ticket.'}}))
+            return
         if result['state'] == 'pending':
             print(json.dumps({'hookSpecificOutput': {'hookEventName': event['hook_event_name'],
                   'additionalContext': 'SFC session attachment requested. If MCP is not ready, state is Pending; trusted UserPromptSubmit/PreModelRequest hooks retry. Read session_status for this connection, and local receipts for work authority.'}}))
@@ -117,7 +134,7 @@ def main():
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext":
             f"SFC is configured at {root}/.sfc/config.json. Read saved status before starting/resuming; use SFC's checked supervisor for board writes and merges. Hooks are literal mistake guards, not a security sandbox."}}))
         return
-    reason = check(event, root, config)
+    reason = check(event, root, config, chat=True)
     if reason:
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                                 "permissionDecision": "deny", "permissionDecisionReason": reason}}))

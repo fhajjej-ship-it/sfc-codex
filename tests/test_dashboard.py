@@ -180,6 +180,10 @@ class OnboardingTests(unittest.TestCase):
         subprocess.run(["git", "init", "-b", "main", str(self.root)], capture_output=True, check=True)
         self.args = SimpleNamespace(repo="example/app", owner="example", project=1, base="main",
                                     status_field="SFC Status", verify=["python3 -m unittest"], merge_policy="human")
+        # Exercise retained factory setup independently of chat onboarding.
+        setup = patch.object(cli, 'onboard_chat', cli.onboard)
+        setup.start()
+        self.addCleanup(setup.stop)
         support = patch('sfc_lib.lifeline.supported', return_value=True)
         support.start()
         self.addCleanup(support.stop)

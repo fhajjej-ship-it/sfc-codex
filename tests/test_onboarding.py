@@ -72,6 +72,13 @@ class OnboardingAcceptanceTests(unittest.TestCase):
         git(self.root, 'remote', 'add', 'origin', 'https://github.com/example/app')
         self.gh = OnboardingGitHub(self.root)
         self.gh.origin = self.gh.origin_url(self.root)
+        mode = patch('sfc_lib.chat_tracking.chat_mode', return_value=False)
+        mode.start()
+        self.addCleanup(mode.stop)
+        # Exercise retained factory setup independently of chat onboarding.
+        setup = patch.object(sfc, 'onboard_chat', sfc.onboard)
+        setup.start()
+        self.addCleanup(setup.stop)
         support = patch('sfc_lib.lifeline.supported', return_value=True)
         support.start()
         self.addCleanup(support.stop)

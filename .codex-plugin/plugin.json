@@ -1,7 +1,7 @@
 {
   "name": "sfc",
-  "version": "0.1.45",
-  "description": "A Codex-only software factory: GitHub Project issues to verified pull requests.",
+  "version": "0.2.0",
+  "description": "Track work from Codex chat on your GitHub Project.",
   "author": {
     "name": "Farouk Hajjej"
   },
@@ -11,15 +11,18 @@
   "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "SFC",
-    "shortDescription": "A software factory built exclusively for Codex.",
+    "shortDescription": "Track work from Codex chat on your GitHub Project.",
     "developerName": "Farouk Hajjej",
     "category": "Developer Tools",
     "brandColor": "#145C54",
     "logo": "./assets/sfc-logo.png",
     "composerIcon": "./assets/sfc-icon.png",
     "defaultPrompt": [
-      "Use SFC to onboard this repository."
-    ]
+      "Set up SFC chat tracking for this repository.",
+      "Show the SFC milestone for my current task.",
+      "Help me implement this change in chat and track it with SFC."
+    ],
+    "longDescription": "Record implementation, checks, review, pull requests, and blockers on the board as work happens in Codex chat."
   },
   "mcpServers": "./.mcp.json"
 }

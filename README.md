@@ -4,9 +4,9 @@
 
 <h1>SFC</h1>
 
-<p><strong>Turn GitHub Project issues into tested, reviewed pull requests in Codex.</strong></p>
+<p><strong>Track work from Codex chat on your GitHub Project.</strong></p>
 
-<p>Software Factory Codex builds in isolated worktrees, runs your project checks, and prepares a pull request with independent review.</p>
+<p>Record the features, fixes, checks and reviews that happen in chat.</p>
 
 <p><strong><a href="https://fhajjej-ship-it.github.io/sfc-codex/">Open the SFC website</a></strong></p>
 
@@ -24,22 +24,23 @@
 
 ```mermaid
 flowchart LR
-    A["Ready issue"] --> B["Build in a worktree"]
-    B --> C["Run checks and review"]
-    C --> D["Reviewed pull request"]
+    A["Request in Codex chat"] --> B["Implement and verify"]
+    B --> C["Review and link PR when needed"]
+    B -.-> D["GitHub Project milestones"]
+    C -.-> D
 ```
 
-SFC **0.1.45** is available as a local Codex plugin.
+SFC **0.2.0** is available as a local Codex plugin.
 
 ## Install in one command
 
-Requires Python 3.10 or newer and the Codex CLI. This fetches the installer
+Installation uses Python 3.10 or newer and the Codex CLI. This fetches the installer
 from the release tag, verifies the release ZIP against its checksum, and runs
 the bundled Codex installer. You can [read the installer](scripts/install_release.py)
 before running it. Stop any active SFC watcher before upgrading.
 
 ```bash
-curl -fsSLo sfc-install.py https://raw.githubusercontent.com/fhajjej-ship-it/sfc-codex/v0.1.45/scripts/install_release.py && python3 sfc-install.py --version 0.1.45
+curl -fsSLo sfc-install.py https://raw.githubusercontent.com/fhajjej-ship-it/sfc-codex/v0.2.0/scripts/install_release.py && python3 sfc-install.py --version 0.2.0
 ```
 
 Reopen Codex after installation and review the SFC hooks in `/hooks`. Start with
@@ -47,245 +48,54 @@ the onboarding steps below.
 
 ## Quick start
 
-Requires macOS/Linux, Python 3.10+, git, authenticated GitHub CLI with repository
-and Projects access, and an authenticated Codex CLI supporting `exec` with JSON
-output schemas. No API key, Claude installation or external helper skill is
-required by SFC itself; the target project's own tooling must also work.
+Requires Codex, Python 3.10+, Git, and GitHub CLI authenticated with access
+to your repository and Project.
 
-1. Get **`sfc-0.1.45.zip`** and **`sfc-0.1.45.zip.sha256`** from the
-   [GitHub release assets](https://github.com/fhajjej-ship-it/sfc-codex/releases/latest).
-   In the download directory, verify, extract, and install. If you used the
-   command above, continue to step 2.
-
-   ```sh
-   shasum -a 256 -c sfc-0.1.45.zip.sha256
-   unzip sfc-0.1.45.zip
-   cd sfc
-   python3 scripts/install_codex_plugin.py
-   ```
-
-   The installer supports a fresh profile and an existing enabled SFC install.
-   It uses Codex's reported installation path to export compatible hooks/MCP,
-   with no guessed cache path or direct cache edits. Keep the extracted folder,
-   including `dist/native-install/`, which remains Codex's registered source.
-   Use `--codex /path/to/codex` when the desktop app uses a different CLI.
-   Stop an active factory before upgrading; reopen Codex afterward and review
-   the updated hooks. Existing disabled choices are preserved. An existing
-   installation journal is a reason to inspect its receipt, not delete it or
-   blindly reinstall. See [native packaging](docs/SESSION-RUNTIME.md#current-desktop-packaging).
-
-2. Open a new Codex chat in the **target repository** and ask:
+1. Open the target repository in Codex and review the SFC hooks in `/hooks`.
+   For an existing SFC project, the plugin uses the saved configuration.
+2. For a new project, ask Codex to set it up with your GitHub Project owner,
+   number and base branch. For example:
 
    ```text
-   Use SFC to onboard this repository for GitHub Project 12 owned by my-org.
-   Use develop as the base, npm ci && npm test and npm run build as verification
-   commands. Use automatic merging for eligible PRs in the Ready queue when I
-   start the factory.
+   Set up SFC tracking for GitHub Project 12 owned by my-org.
+   Use main as the base and npm test as the project check.
    ```
 
-   Replace the owner, Project, base and checks with your project's actual values.
-   This requests auto policy and merge authority for the selected run scope. Say
-   “leave merging to me” instead to choose human merging.
-   Complete the returned board setup steps and verify the saved Factory view.
+   If GitHub asks you to save the column grouping, set **Column by → SFC Status**
+   in the board view, then ask Codex to verify it.
+3. Ask Codex to fix a bug or build a feature in the project chat. SFC links the
+   issue and shows actual progress as the chat works.
 
-3. Put only authorized issues with concrete `## Acceptance criteria` bullets in
-   Ready. In that Codex chat, preview the queue, then explicitly start:
+**Manual installation.** Download `sfc-0.2.0.zip` and
+`sfc-0.2.0.zip.sha256` from the
+[release assets](https://github.com/fhajjej-ship-it/sfc-codex/releases/latest).
+In the download directory, run:
 
-   ```text
-   Use SFC to run doctor, lint and a dry run. Show the scope before starting.
-   ```
+```sh
+shasum -a 256 -c sfc-0.2.0.zip.sha256
+unzip sfc-0.2.0.zip
+cd sfc
+python3 scripts/install_codex_plugin.py
+```
 
-   After reviewing the preview, use `$sfc:sfc run`; use `$sfc:sfc stop` to stop.
-   These are skill prompts inside Codex, not shell commands. A real run invokes
-   workers, publishes draft PRs and updates the configured board. Use the already
-   authorized merge scope with `--allow-merge`. New setup defaults to auto policy;
-   existing project choices are preserved. A dry run does not prove builds or remote writes will
-   succeed.
-
-Codex lists the plugin as **SFC** after installation. Review the bundled hooks
-in Codex's `/hooks` interface before enabling them for your project. For
-configuration details, see the [onboarding guide](docs/ONBOARDING.md).
+Keep the extracted directory as the installer's registered source.
 
 ## How it works
 
-SFC runs the work for a ticket in an isolated worktree and records its checks
-and review findings. A merge requires current evidence and your merge
-authorization. When configured and authorized, the
-[release workflow](docs/RELEASES.md) packages merged changes, reuses matching
-test or source-review evidence, and verifies the published download.
-
-<details>
-<summary>See the workflow from ticket to release</summary>
-
-```mermaid
-flowchart TD
-    A[Ready work ticket] --> B[Codex implements in isolated worktree]
-    B --> C[Freeze candidate]
-    C --> D[Run required checks or reuse matching execution evidence]
-    D --> P{Required checks pass?}
-    P -- No --> O[Stop or bounded correction]
-    P -- Yes --> E[Resolve obligations, then independent QA and required review]
-    E --> F{Review obligations satisfied?}
-    F -- Findings, within existing limits --> B
-    F -- Yes --> G[Checked, authorized merge]
-    G --> H[Release ticket pins merged source and membership]
-    D -. Immutable test evidence .-> I[Validate evidence against release inputs]
-    E -. Applicable acceptance coverage .-> J[Review remaining package and publication obligations]
-    H --> K[Package and run configured preflight, including install checks]
-    K --> Q{Package preflight passes?}
-    Q -- No --> O
-    Q -- Yes --> I
-    I --> L[Reuse matching project checks; run remaining project and artifact checks]
-    L --> R{Release checks pass?}
-    R -- No --> O
-    R -- Yes --> J
-    J --> M[Checked, authorized publication]
-    M --> N[Verify published tag and downloaded asset bytes]
-```
-
-</details>
-
-## Setup and operating guides
-
-Onboarding writes `.sfc/config.json` in the target repository without overwriting
-existing choices. New projects default to
-automatically merging eligible reviewed PRs after separate run/watch merge
-authorization. Choose `--merge-policy human` (or say “leave merging to me”) for
-human merging. Setup alone starts no workers and grants no run scope or merge
-authority. Installing/updating, read-only status/doctor and reopening a project
-retain saved policies and session budgets. It creates/reuses SFC Status, Priority,
-work-type labels and activity fields. Save **View → Column by → SFC Status** and reopen the returned
-Factory view URL to verify all seven stages: Backlog, Ready, Building, QA,
-Review, Blocked and Done. Field creation alone does not complete board setup.
-
-| Guide | Details |
+| Board stage | What happened in Codex |
 |---|---|
-| [Configuration](docs/CONFIGURATION.md) | Board setup/repair, Priority, worker model/effort/speed, timezones and finite limits |
-| [Activity and recovery](docs/ACTIVITY.md) | SFC Agent / SFC Activity reporting, freshness and retained diagnostics |
-| [Work types](docs/WORK-TYPES.md) | Bug, Feature, Refactor, Documentation and Maintenance; existing-board upgrades |
-| [Scoped Backlog pickup](docs/BACKLOG-PICKUP.md) | Explicit issue allowlists, priority ordering, prerequisites and claim recovery |
-| [Foreground watcher](docs/WATCH.md) | Preview, start, status, stop, exclusions, holds and session recovery |
-| [Local merge](docs/LOCAL-MERGE.md) | Exact candidate protocol, tradeoffs and uncertain-outcome recovery |
-| [Distribution assessment](docs/DISTRIBUTION.md) | Dated public-directory eligibility, hook dependencies and manual-launch recommendation |
-| [Capabilities](docs/CAPABILITIES.md) / [design](docs/DESIGN.md) | Supported behavior, architecture and verification ownership |
+| Building | The chat started work on a feature, bug fix or maintenance task. |
+| QA | The chat ran project checks or verified the requested behavior. |
+| Review | The chat is reviewing the change, with a linked PR when one exists. |
+| Blocked | A specific blocker prevents the chat from proceeding. |
+| Done | The linked PR merged, or a change intended for local delivery was verified. |
 
-Ordinary runs select Ready only. Optional `## Blocked by` references name
-same-repository prerequisites. Scoped Backlog pickup requires both
-`--include-backlog` and repeated `--issue` allowlist entries; preview and execute
-with the same authorized scope. Detailed preview rows cover only that selection;
-prerequisites outside it are still independently verified.
+The current chat's model handles the work. You can ask it to open a PR and link
+it to the issue. Merge and release follow your repository's normal process.
+SFC remembers pending board updates during GitHub outages so work can continue.
 
-The [foreground watcher](docs/WATCH.md) polls authorized Backlog and Ready
-work within a finite session. Review the scope, exclusions, and hold label before
-starting it. Setup and installation alone launch no workers.
-
-On supported macOS hosts, newly onboarded projects can keep watching while an
-authorized Codex project chat is open. Trusted hooks attach the local session
-runtime. Use `onboard --no-auto-start` to leave it off, or
-`--no-session-lifetime` for bounded auto-start. Each window is limited, and
-automatic merging requires separate authority. Review the
-[session runtime](docs/SESSION-RUNTIME.md) and
-[onboarding checklist](docs/ONBOARDING.md) for host support and activation checks.
-
-## Included skills
-
-| Skill | Job |
-|---|---|
-| `sfc` | Onboard, lint, status, run, resume and stop |
-| `sfc-build` | Implement one issue in an isolated worktree |
-| `sfc-qa` | Check acceptance criteria, behavior and test gaps |
-| `sfc-security` | Review the PR diff for supported vulnerabilities |
-| `sfc-review` | Independent correctness and evidence review |
-| `sfc-collect` | Investigate, deduplicate and prioritize findings or Backlog issues |
-| `sfc-ui-refine` | Critique, improve and visually verify a selected UI |
-| `sfc-visual` | Generate a standalone HTML recap, plan or codebase map |
-| `sfc-git-sync` | Review, commit, integrate remote changes and push selected work |
-
-The first five implement the queue pipeline. The last four are interactive
-workflows using tools in the current chat. Browser access, telemetry and
-project-specific databases are not bundled. Ask "Use SFC to prioritize this
-project's backlog" to record reasoned priorities, or "suggest priorities only"
-for a local readout. Neither authorizes workers or merges. Ticket creation needs
-a request to create tickets and uses the bundled verified `create-ticket` path;
-see the [priority rubric and creation contract](skills/sfc-collect/references/prioritization.md).
-
-## Merge controls and verification
-
-New-project onboarding defaults to `merge_policy: "auto"`. Explicit
-`--merge-policy human` remains available, and existing configurations retain their
-saved policy. With human policy or without run merge authority, a verified PR
-waits for human review with its card in Blocked; a later run observes the external
-merge before Done. QA-labeled issues test the existing base without creating an
-implementation PR. Other cards
-follow Build → QA → Security → Review.
-
-In supervised builds, builders reproduce relevant failures and run meaningful
-focused checks. The supervisor runs configured full verification before
-independent QA/security and repeats it for the final merge candidate. Explicit
-builder-specific or full-suite project requirements and full runs needed to
-reproduce defects still apply. Standalone builds retain project/user verification
-obligations. See [verification ownership](docs/DESIGN.md).
-
-Auto-merge requires configured `merge_policy: "auto"` **and** explicit run/session
-merge authority (`run --allow-merge` or `watch --allow-merge`). Once authorized
-for the selected scope, eligible PRs merge without routine per-PR approval or
-repeated requests for the same authority. Default policy does not authorize a new
-watcher session or renew a named session's settings, counters or deadline.
-Default `merge_mode: "github-protected"`
-requires strict up-to-date branch protection and successful GitHub checks.
-Explicit `merge_mode: "local-verification"` uses one atomic expected-head-and-base
-fast-forward to the exact reviewed head; it preserves history without squashing,
-rejects protected/ruled refs and unsupported servers, and has no fallback.
-
-Both modes require unchanged head/base/config/issue evidence, independent QA,
-security and final review, repeated project checks, a small diff and no sensitive
-labels/paths. The default cap is 400 changed lines. Missing GitHub checks require
-a deliberate `allow_no_checks: true`; existing checks still must pass. SFC does
-not bypass branch rules or apply live database migrations. Acknowledged exact
-merges can use bounded read-only confirmation of GitHub recognition; ambiguous
-outcomes retain journals without repeating the merge request. Read the
-[merge contract and recovery policy](docs/LOCAL-MERGE.md#bounded-recognition-window).
-
-Local mode journals before writes and verifies actual base/PR/issue outcomes
-before Done. External human merges without a local journal require manual
-reconciliation in this mode; retain uncertain outcomes for inspection.
-
-Workers use `workspace-write` for Build, `read-only` for other lanes and approval
-policy `never`; the supervisor owns commits and GitHub writes. Unavailable tools,
-permissions or model settings are reported without silently broadening access or
-substituting models. Project checks are local shell commands that may install
-dependencies or write artifacts. Use trusted projects and suitable test data:
-the factory and literal-command hooks are not a sandbox for hostile code or issues.
-Normal plugin use treats installed code and skills as **read-only**. Keep project
-configuration and run state in the target repository; maintainer changes belong
-in source, distributed as versioned updates.
-
-## Evidence and recovery
-
-Local `.sfc/` state, worktrees and raw receipts are excluded from Git. Lane
-receipts pin the reviewed head, base, configuration and task. Failed checks,
-malformed worker results, timeouts, stale heads, auth/rate errors or ambiguous
-GitHub writes preserve evidence. Writes are not automatically retried. `stop`
-terminates only child process groups owned by the active supervisor.
-
-Default limits: two concurrent cards, 20 ticket admissions, three tickets without
-terminal/stage/evidence progress, two failing attempts per issue, 20 minutes
-per worker and 15 minutes per verification command. Limits must stay positive;
-watchers also have finite time/poll/claim budgets. Waiting is not Done.
-See [rolling priority admission and accounting](docs/SCHEDULING.md) for slot
-refill, conservative interruption spending and unchanged authority boundaries.
-
-After ambiguity, inspect GitHub and `.sfc/state.json` before restarting. Never
-delete worktrees, clear state or reset branches to force recovery. An in-flight
-card without a saved claim requires explicit recovery. A successful new preflight
-clears only the current-run error when a real run starts; prior diagnostics stay
-in `.sfc/runs/<run_id>/`. Read-only status and dry runs do not clear them. See
-[claim recovery](docs/BACKLOG-PICKUP.md), [watch recovery](docs/WATCH.md) and
-[merge recovery](docs/LOCAL-MERGE.md).
-
-For current evidence and its limits, see the
-[verification and review qualification](docs/DELIVERY-QUALIFICATION.md) and
-[published releases](https://github.com/fhajjej-ship-it/sfc-codex/releases).
+See the [chat tracking guide](docs/CHAT-TRACKING.md) for setup and progress
+tracking, and the [work types guide](docs/WORK-TYPES.md) for issue labels.
 
 ## Support
 
