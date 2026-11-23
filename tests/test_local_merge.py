@@ -751,7 +751,8 @@ class MergeOnboardingTests(unittest.TestCase):
                 return {"ready": True}
             dashboard = configure_dashboard
         output = io.StringIO()
-        with patch("sfc.GitHub", SetupAdapter), patch("sfc_lib.lifeline.supported", return_value=True), redirect_stdout(output):
+        with patch.object(sfc, 'onboard_chat', sfc.onboard), patch("sfc.GitHub", SetupAdapter), \
+                patch("sfc_lib.lifeline.supported", return_value=True), redirect_stdout(output):
             status = sfc.main(["--root", str(self.root), "onboard", "--repo", "example/app",
                                "--owner", "example", "--project", "1", "--base", "main",
                                "--verify", fixtures.BASE_CONFIG["verify_commands"][0], *options])
@@ -772,14 +773,14 @@ class MergeOnboardingTests(unittest.TestCase):
         self.assertFalse((common_dir(self.root) / "sfc-watch.json").exists())
         self.assertEqual(self.proc.lanes, [])
 
-    def test_cli_help_explains_auto_default_human_alternative_and_separate_authority(self):
+    def test_onboarding_help_describes_chat_and_manual_merging(self):
         output = io.StringIO()
         with redirect_stdout(output), self.assertRaises(SystemExit) as exit:
             sfc.main(["onboard", "--help"])
         self.assertEqual(exit.exception.code, 0)
         help_text = " ".join(output.getvalue().split())
-        for text in ("default: auto", "human leaves merging to you", "separate run/watch merge authority"):
-            self.assertIn(text, help_text)
+        self.assertIn("chat tracking leaves merging to you", help_text)
+        self.assertNotIn("--auto-start", help_text)
 
     def test_cli_explicit_human_policy_is_saved_and_blocks_authorized_auto_merge(self):
         result, config = self.onboard(["--merge-policy", "human"])

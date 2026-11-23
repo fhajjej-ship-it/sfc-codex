@@ -2234,6 +2234,8 @@ only if every item contains non-whitespace text, with no trailing empty string.
 
     def _run(self, *, allow_merge=False, dry_run=False, include_backlog=False, issues=(), watcher=None, admission=None,
              waiting=False):
+        if self.c.get('workflow_mode') == 'chat':
+            raise Halt('Chat tracking is enabled. Start work in Codex and record it with sfc track.')
         self.watcher = watcher
         self.allow_merge = allow_merge
         self.waiting_for_build = waiting

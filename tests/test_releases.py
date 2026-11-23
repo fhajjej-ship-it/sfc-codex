@@ -877,7 +877,9 @@ class ReleaseTests(unittest.TestCase):
             return subprocess.Popen(argv, **kwargs), None  # Native cleanup is tested separately.
 
         output = io.StringIO()
-        with patch.object(sfc, 'GitHub', side_effect=setup_adapter), \
+        with patch.object(sfc, 'onboard_chat', sfc.onboard), \
+                patch('sfc_lib.chat_tracking.chat_mode', return_value=False), \
+                patch.object(sfc, 'GitHub', side_effect=setup_adapter), \
                 patch.object(lifeline, 'supported', return_value=True), \
                 patch('sfc_lib.session_runtime.supported', return_value=True), \
                 patch.object(lifeline, 'spawn', side_effect=run_command), \

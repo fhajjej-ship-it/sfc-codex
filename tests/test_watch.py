@@ -1218,19 +1218,15 @@ class WatchStopTests(unittest.TestCase):
         self.assertEqual(self.session()['reason'], 'stopped')
         self.assertEqual(self.factory.record(self.gh.items[0])['claim']['state'], 'verified')
 
-    def test_signal_handler_requests_shared_stop_without_signalling_pids(self):
-        handlers = {}
-        def watch(**kwargs):
-            handlers[signal.SIGTERM](signal.SIGTERM, None)
-            return {'stopped': (common_dir(self.root) / 'sfc-stop').exists()}
+    def test_chat_workflow_rejects_watcher_before_installing_signal_handlers(self):
         write_json(self.root / '.sfc/config.json', self.c)
-        output = io.StringIO()
-        with patch('sfc.Factory', return_value=self.factory), patch.object(self.factory, 'watch', side_effect=watch), \
-                patch('sfc.signal.signal', side_effect=lambda sig, cb: handlers.update({sig: cb})), \
-                redirect_stdout(output):
-            self.assertEqual(sfc.main(['--root', str(self.root), 'watch', '--start']), 0)
-        self.assertTrue(json.loads(output.getvalue())['stopped'])
-        self.assertIn(signal.SIGINT, handlers)
+        with patch('sfc.Factory') as factory, patch('sfc.signal.signal') as install_signal, \
+                redirect_stderr(io.StringIO()) as error:
+            self.assertEqual(sfc.main(['--root', str(self.root), 'watch', '--start']), 1)
+        self.assertIn('your Codex chat', error.getvalue())
+        factory.assert_not_called()
+        install_signal.assert_not_called()
+        self.assertFalse((common_dir(self.root) / 'sfc-stop').exists())
 
     def test_reaped_child_is_never_signalled_using_reused_numeric_pid(self):
         class Reaped:

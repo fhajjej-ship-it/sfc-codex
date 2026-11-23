@@ -1,0 +1,227 @@
+"""Chat milestones use a local outbox and fake Project reads/writes."""
+from contextlib import redirect_stderr, redirect_stdout
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import unittest
+from unittest.mock import Mock, patch
+
+import test_factory as fixtures
+import sfc
+from test_pickup import PickupGitHub, ticket
+from sfc_lib import autostart, chat_tracking
+from sfc_lib.common import Halt, common_dir, exclusive, git, load_config, run, write_json
+from sfc_lib.session_runtime import SessionRuntime, request_attachment
+from sfc_lib.ticket_coordination import ticket_directory
+
+
+class TrackingGitHub(PickupGitHub):
+    def __init__(self, root, cards):
+        super().__init__(root, cards)
+        self.comments = []
+        self.lose_note_response = False
+        self.pull = {'number': 41, 'baseRefName': 'main', 'state': 'OPEN',
+                     'url': 'https://github.com/example/app/pull/41'}
+
+    def pr(self, number):
+        return self.pull.copy()
+
+    def move(self, card, status):
+        fixtures.FakeGitHub.move(self, card, status)
+
+    def call(self, *args, **kwargs):
+        if args[0] == 'api' and '/comments' in args[1]:
+            if '--method' not in args:
+                return [self.comments.copy()]
+            note = {'id': len(self.comments) + 1, **json.loads(kwargs['input'])}
+            self.comments.append(note)
+            if self.lose_note_response:
+                raise Halt('Fixture dropped the note response')
+            return note
+        return super().call(*args, **kwargs)
+
+
+class ChatTrackingTests(unittest.TestCase):
+    tearDown = fixtures.IntegrationTests.tearDown
+
+    def setUp(self):
+        fixtures.IntegrationTests.setUp(self)
+        write_json(self.root / '.sfc/config.json', self.c)
+        self.c = load_config(self.root)
+        self.gh = TrackingGitHub(self.root, [ticket(1, status='Backlog')])
+        self.gh.c = self.c
+        self.task = 'chat-example-feature'
+
+    def start(self, *, issue=1):
+        return chat_tracking.start(self.root, self.c, task=self.task, title='Add export',
+                                   summary='Export the selected rows', issue=issue, work_type='Feature',
+                                   acceptance=['Selected rows export to CSV'])
+
+    def update(self, event_id, stage, **values):
+        return chat_tracking.update(self.root, self.c, task=self.task, event_id=event_id, stage=stage,
+                                    summary='Observed ' + stage, **values)
+
+    def sync(self):
+        return chat_tracking.sync(self.gh, self.root, self.task)
+
+    def test_records_a_single_issue_and_tracks_only_observed_milestones(self):
+        self.gh.github_status['item-1'] = 'in-progress'
+        with exclusive(self.root):
+            self.assertEqual(self.start()['latest_summary'], 'Export the selected rows')
+            self.start()
+            self.update('tests', 'QA')
+        self.assertEqual(self.gh.reads + self.gh.writes + self.gh.comments, [])
+        self.assertEqual(self.sync()['board_stage'], 'QA')
+        self.update('opened', 'Review', pr=41)
+        self.update('finished', 'Done')
+        pending = self.sync()
+        self.assertEqual(pending['board_stage'], 'Review')
+        self.assertEqual(pending['latest_summary'], 'Observed Done')
+        self.assertEqual(pending['pending'], ['finished'])
+        self.gh.pull['state'] = 'MERGED'
+        done = self.sync()
+        self.assertEqual((done['state'], done['board_stage']), ('synced', 'Done'))
+        self.assertEqual(self.gh.writes, [(1, 'Building'), (1, 'QA'), (1, 'Review'), (1, 'Done')])
+        self.assertEqual(self.gh.github_status['item-1'], 'done')
+        self.assertIn('https://github.com/example/app/pull/41', self.gh.comments[-1]['body'])
+        self.assertEqual(self.proc.lanes, [])
+
+    def test_github_failure_queues_updates_and_note_readback_prevents_duplicate(self):
+        self.start()
+        self.update('tests', 'QA')
+        with patch.object(self.gh, 'verify_repository', side_effect=Halt('Fixture GitHub outage')):
+            self.assertEqual(self.sync()['pending'], ['start', 'tests'])
+        self.gh.lose_note_response = True
+        self.assertEqual(self.sync()['pending'], ['tests'])
+        self.assertEqual(len(self.gh.comments), 1)
+        self.assertEqual(self.sync()['state'], 'synced')
+        self.assertEqual(len(self.gh.comments), 1)
+        self.assertEqual(self.gh.writes, [(1, 'Building'), (1, 'QA')])
+
+    def test_created_issue_binding_uses_the_same_creation_receipt_after_restart(self):
+        self.start(issue=None)
+        self.start(issue=None)
+
+        def create(gh, root, **request):
+            self.assertEqual(request['request_id'], 'chat-' + self.task)
+            self.assertEqual(request['work_type'], 'Feature')
+            path = ticket_directory(root) / (request['request_id'] + '.json')
+            write_json(path, {'issue': {'id': gh.items[0]['id'], 'number': 1},
+                              'item_id': gh.items[0]['item_id'], 'project': 'p', 'repo': gh.c['repo']})
+            raise Halt('Fixture lost the create response after enrollment')
+
+        with patch('sfc_lib.chat_tracking.create_ticket', side_effect=create) as creation:
+            self.assertEqual(self.sync()['state'], 'pending')
+            self.assertEqual(self.sync()['issue']['number'], 1)
+            self.assertEqual(self.sync()['state'], 'synced')
+            creation.assert_called_once()
+        self.update('local-fix', 'Done', local_done=True)
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+        self.assertEqual(self.gh.writes, [(1, 'Building'), (1, 'Done')])
+
+    def test_preserves_an_external_stage_change(self):
+        self.start()
+        self.sync()
+        self.gh.items[0]['status'] = 'Blocked'
+        self.update('tests', 'QA')
+        self.assertEqual(self.sync()['state'], 'pending')
+        self.assertEqual(self.gh.items[0]['status'], 'Blocked')
+
+    def test_cli_records_local_work_without_calling_github(self):
+        cli = Path(__file__).resolve().parents[1] / 'scripts/sfc.py'
+
+        def track(*args):
+            result = run([sys.executable, '-B', str(cli), '--root', str(self.root), 'track', *args], self.root)
+            return json.loads(result.stdout)
+
+        track('start', '--task', self.task, '--type', 'Bug', '--title', 'Fix export',
+              '--summary', 'Preserve the selection', '--acceptance', 'Export only selected rows')
+        track('update', '--task', self.task, '--event', 'verified', '--stage', 'Done',
+              '--summary', 'Focused regression test passed', '--local-done')
+        status = track('status', '--prefix', 'chat-example')['tasks'][0]
+        self.assertEqual(status['desired_stage'], 'Done')
+        self.assertEqual(status['latest_summary'], 'Focused regression test passed')
+        self.assertIsNone(status['board_stage'])
+        self.assertEqual(status['pending'], ['start', 'verified'])
+
+    def test_chat_prompt_hook_cues_tracking_and_watcher_cannot_start(self):
+        event = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'chat-fixture', 'turn_id': 'turn-1',
+                 'cwd': str(self.root), 'permission_mode': 'default'}
+        context = request_attachment(event, environ={})
+        self.assertEqual(context['state'], 'tracking')
+        next_turn = request_attachment({**event, 'turn_id': 'turn-2'}, environ={})
+        self.assertEqual(next_turn['prefix'], context['prefix'])
+        self.assertNotEqual(next_turn['turn'], context['turn'])
+        env = {key: value for key, value in os.environ.items() if key not in ('SFC_WORKER', 'SFC_TEST_CONTEXT')}
+        command = Path(__file__).resolve().parents[1] / 'hooks/guard.py'
+        output = run([sys.executable, str(command), '--attachment'], self.root, input=json.dumps(event), env=env)
+        instructions = json.loads(output.stdout)['hookSpecificOutput']['additionalContext']
+        self.assertIn('record the task before editing', instructions)
+        self.assertIn('Show the task title and verified issue link in chat', instructions)
+        runtime = SessionRuntime(self.root, environ={})
+        self.assertEqual(runtime.attach(event, native_thread=event['session_id'])['state'], 'tracking')
+        auth_path = common_dir(self.root) / 'sfc-autostart.json'
+        write_json(auth_path, {'version': 2, 'root': str(self.root), 'enabled': True, 'state': 'armed'})
+        before = auth_path.read_bytes()
+        self.assertEqual(runtime.attach(event, native_thread=event['session_id'])['state'], 'tracking')
+        factory = Mock()
+        result = autostart.launch({**event, 'hook_event_name': 'SessionStart', 'source': 'startup'},
+                                  environ={}, factory_type=factory)
+        self.assertEqual(result['state'], 'ignored')
+        factory.assert_not_called()
+        self.assertFalse((common_dir(self.root) / 'sfc-watch.json').exists())
+        self.assertEqual(auth_path.read_bytes(), before)
+        self.assertNotIn('workflow_mode', load_config(self.root))
+        legacy_arguments = [('run',), ('watch', '--start'), ('autostart', '--enable'),
+                            ('recover-ticket', '--issue', '1', '--adopt-pr', '41', '--head', 'a' * 40,
+                             '--request-id', 'saved-issue', '--reason', 'test', '--grant-one')]
+        for args in legacy_arguments:
+            with self.subTest(args=args), patch.object(sfc, 'Factory') as legacy, redirect_stderr(io.StringIO()) as error:
+                self.assertEqual(sfc.main(['--root', str(self.root), *args]), 1)
+                self.assertIn('your Codex chat', error.getvalue())
+                legacy.assert_not_called()
+
+    def test_linked_checkout_tracks_from_the_configured_project_even_if_old_receipt_is_invalid(self):
+        checkout = self.root / '.sfc' / 'worktrees' / 'track-local'
+        git(self.root, 'worktree', 'add', '--detach', checkout)
+        autostart.paths(self.root)[1].write_text('unreadable historical watcher receipt')
+        event = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'chat-fixture', 'turn_id': 'turn-1',
+                 'cwd': str(checkout), 'permission_mode': 'default'}
+        attachment = request_attachment(event, environ={})
+        self.assertEqual((attachment['state'], Path(attachment['root'])), ('tracking', self.root.resolve()))
+
+    def test_local_review_can_move_to_done_without_a_pull_request(self):
+        self.start()
+        for event, stage in [('tests', 'QA'), ('review', 'Review'), ('finished', 'Done')]:
+            self.update(event, stage, local_done=stage == 'Done')
+            self.assertEqual(self.sync()['board_stage'], stage)
+
+    def test_onboarding_sets_up_tracking_with_no_worker_grants_or_codex_cli(self):
+        (self.root / '.sfc/config.json').unlink()
+        github = Mock()
+        github.onboarding_identity.return_value = {'project_id': 'project'}
+        github.metadata.return_value = {'id': 'project'}
+        github.configure_dashboard.return_value = {'ready': True}
+        github.dashboard.return_value = {'ready': True}
+        arguments = ['--root', str(self.root)]
+        onboard = ['onboard', '--repo', 'example/app', '--owner', 'example',
+                   '--project', '1', '--base', 'main']
+        with patch.object(sfc, 'GitHub', return_value=github), patch.object(sfc, 'Factory') as legacy:
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(sfc.main([*arguments, *onboard, '--preview']), 0)
+            preview = json.loads(output.getvalue())
+            github.metadata.assert_not_called()
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(sfc.main([*arguments, *onboard, '--expected-review',
+                                           preview['setup_review']['review_digest']]), 0)
+            self.assertEqual(json.loads(output.getvalue())['merge_policy'], 'human')
+            with redirect_stdout(io.StringIO()) as output, patch.object(sfc, 'run') as worker:
+                self.assertEqual(sfc.main([*arguments, 'doctor']), 0)
+                worker.assert_not_called()
+            self.assertEqual(json.loads(output.getvalue())['worker_execution'], 'current Codex chat')
+            legacy.assert_not_called()
+        self.assertEqual(load_config(self.root)['workflow_mode'], 'chat')
+        self.assertFalse(autostart.paths(self.root)[1].exists())
+        github.metadata.assert_called_once_with(create=True, project_id='project')

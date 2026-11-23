@@ -274,7 +274,8 @@ def normal_setup(root, gh, profile, settings):
         args.extend(('--' + key.replace('_', '-'), value))
     if profile == 'migrated':
         args.extend(('--efficiency-profile', 'off'))
-    with patch.object(sfc, 'GitHub', return_value=gh), \
+    with patch.object(sfc, 'onboard_chat', sfc.onboard, create=True), \
+            patch.object(sfc, 'GitHub', return_value=gh), \
             patch.object(gh, 'configure_dashboard', return_value={'ready': True}, create=True), \
             redirect_stdout(io.StringIO()):
         if sfc.main([*prefix, *args]):

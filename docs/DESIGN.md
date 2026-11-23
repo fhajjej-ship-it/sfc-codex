@@ -7,9 +7,11 @@ merge or publication authority; final receipts retain exact candidate/base/task
 pins. Optional inspection overlap requires qualification and a separate final
 assessment consuming the actual completed checks.
 
-A plugin exclusively for Codex.
-The useful action is to put an issue in Ready and receive an independently
-checked PR, with enough evidence to decide whether to merge it.
+SFC [tracks work in Codex chat](CHAT-TRACKING.md). The chat implements,
+tests and reviews. Authorized pull requests use the repository's usual process.
+SFC saves milestones to a local outbox and reads back GitHub Project changes.
+Existing configurations use that path on upgrade. The following sections
+describe the previous factory engine and the receipts it left behind.
 
 Local [delivery accounting](DELIVERY-ACCOUNTING.md) links work and release
 tickets, command/worker attempts, immutable reuse references and publication

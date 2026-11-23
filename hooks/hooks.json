@@ -15,27 +15,6 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/hooks/guard.py\" --session",
-            "statusMessage": "Checking SFC factory context"
-          }
-        ]
-      },
-      {
-        "matcher": "^(startup|resume)$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"${PLUGIN_ROOT}/hooks/guard.py\" --autostart",
-            "async": true,
-            "timeout": 86760,
-            "statusMessage": "Checking authorized SFC auto-start"
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
             "type": "mcp_tool",
             "server": "sfc_session",
             "tool": "session_attach_hook",

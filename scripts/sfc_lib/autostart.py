@@ -141,6 +141,8 @@ def verify_onboarding_identity(gh, expected):
 def configure(factory, *, enabled, allow_merge=False, lifetime=False,
               reviewed_identity=None, expected_metadata=None):
     """Explicit user choice only; caller holds the common supervisor lock."""
+    if enabled and factory.c.get('workflow_mode') == 'chat':
+        raise Halt('Chat tracking is enabled. Automatic board execution is disabled.')
     common, path, status_path = paths(factory.root)
     old = read_json(path) if path.exists() else None
     if old is not None and (not isinstance(old, dict) or
@@ -225,6 +227,10 @@ def launch(event, *, environ=None, cancelled=lambda: False, factory_type=Factory
         write_json(status_path, value)
         return value
     try:
+        from .chat_tracking import chat_mode
+        root = configured_root(event['cwd'])
+        if chat_mode(root):
+            return {'state': 'ignored', 'detail': 'This project uses chat tracking'}
         auth = read_json(path) if path.exists() else {}
         if not isinstance(auth, dict):
             raise Halt('Auto-start authorization is malformed; inspect and explicitly re-enable')
@@ -233,7 +239,6 @@ def launch(event, *, environ=None, cancelled=lambda: False, factory_type=Factory
         if auth.get('version') == 2:
             return report('pending', 'Lifetime mode awaits the trusted session_attach MCP hook; this command hook owns no observer')
         original_auth = auth
-        root = configured_root(event['cwd'])
         f = factory_type(root)
         f.processes.cancel_check = cancelled
         host = digest(event['session_id'])

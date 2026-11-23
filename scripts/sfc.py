@@ -18,7 +18,7 @@ from sfc_lib.priority import create_ticket
 from sfc_lib.ticket_coordination import creation_lock
 from sfc_lib.work_types import TYPES
 from sfc_lib.watch import status as watch_status
-from sfc_lib import autostart
+from sfc_lib import autostart, chat_tracking
 from sfc_lib import onboarding, setup_review
 from sfc_lib import efficiency, review_policy
 
@@ -37,7 +37,7 @@ def onboard(root, args):
         raise Halt("SFC is already configured; inspect the existing config rather than overwrite it")
     if (root / '.sfc/onboarding.json').exists():
         raise Halt('Existing onboarding receipt; preserve and inspect partial setup before retrying')
-    automatic_start = getattr(args, 'auto_start', True)
+    automatic_start = getattr(args, 'auto_start', None) is not False
     lifetime_choice = getattr(args, 'session_lifetime', None)
     lifetime = automatic_start if lifetime_choice is None else lifetime_choice
     if lifetime and not automatic_start:
@@ -52,7 +52,7 @@ def onboard(root, args):
                          "project": {"owner": args.owner, "number": args.project},
                          "status_field": args.status_field, "verify_commands": args.verify,
                          "activity_timezone": getattr(args, "activity_timezone", "UTC"),
-                         "merge_policy": args.merge_policy, "auto_max_lines": 400,
+                         "merge_policy": args.merge_policy or "auto", "auto_max_lines": 400,
                          "merge_mode": getattr(args, "merge_mode", "github-protected"),
                          "allow_no_checks": getattr(args, "allow_no_checks", False), "models": {},
                          **{key: default if (value := getattr(args, key, None)) is None
@@ -121,16 +121,7 @@ def onboard(root, args):
         autostart.verify_onboarding_identity(gh, reviewed_identity)
         metadata = gh.metadata(create=True, project_id=reviewed_identity['project_id'])
         autostart.verify_onboarding_identity(gh, reviewed_identity)
-    common = Path(git(root, "rev-parse", "--git-common-dir"))
-    if not common.is_absolute():
-        common = root / common
-    exclude = common / "info/exclude"
-    exclude.parent.mkdir(parents=True, exist_ok=True)
-    existing = exclude.read_text() if exclude.exists() else ""
-    if ".sfc/" not in existing.splitlines():
-        with exclude.open("a") as handle:
-            handle.write("\n# SFC local state, worktrees and receipts\n.sfc/\n")
-    write_json(path, c)
+    save_project_config(root, c)
     receipt = onboarding.save(root, c, metadata, automatic_start, lifetime, efficiency_plan=efficiency_plan,
                               setup_choices=requested, reviewed_identity=reviewed_identity)
     # Persist the configuration before presentation writes so a partial setup can
@@ -156,6 +147,63 @@ def onboard(root, args):
             "worker_settings": worker_settings(c),
             "dashboard": dashboard, "autostart": automatic,
             **onboarding.report(root, c, dashboard, automatic, efficiency_plan=efficiency_plan, gh=gh)}
+
+
+def save_project_config(root, config):
+    exclude = common_dir(root) / "info/exclude"
+    exclude.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude.read_text() if exclude.exists() else ""
+    if ".sfc/" not in existing.splitlines():
+        with exclude.open("a") as handle:
+            handle.write("\n# SFC local state, worktrees and receipts\n.sfc/\n")
+    write_json(root / ".sfc/config.json", config)
+
+
+def onboard_chat(root, args):
+    if chat_tracking.chat_mode(root) or (root / '.sfc/onboarding.json').exists():
+        raise Halt('SFC is already configured. Use doctor to check the configured Project.')
+    if (args.auto_start is True or args.session_lifetime is True or args.allow_merge
+            or args.release_config or args.release_authorization or args.merge_policy == 'auto'):
+        raise Halt('SFC tracks work started in Codex chat. Set up the Project with manual merging.')
+    repo = args.repo or GitHub(root, {"project": {}}).call("repo", "view", "--json", "nameWithOwner")["nameWithOwner"]
+    branch = args.base or git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False).removeprefix("origin/")
+    if not branch:
+        raise Halt("Set --base explicitly; remote default branch is unavailable")
+    config = validate_config({
+        "version": 1, "workflow_mode": "chat", "repo": repo, "base_branch": branch,
+        "project": {"owner": args.owner, "number": args.project}, "status_field": args.status_field,
+        "verify_commands": args.verify or [], "activity_timezone": args.activity_timezone,
+        "merge_policy": "human", "merge_mode": "github-protected", "allow_no_checks": False,
+        "auto_max_lines": 400, "max_workers": 2, "max_cycles": 20, "max_no_progress": 3,
+        "max_attempts": 2, "worker_timeout": 1200, "verify_timeout": 900,
+    })
+    gh = GitHub(root, config)
+    identity = gh.onboarding_identity()
+    digest = autostart.digest([config, identity])
+    if args.preview:
+        return {"mode": "chat", "proposed_config": config, "project_id": identity["project_id"],
+                "setup_review": {"review_digest": digest}}
+    if args.expected_review is not None and args.expected_review != digest:
+        raise Halt('Setup review changed; preview the Project again before applying')
+    autostart.verify_onboarding_identity(gh, identity)
+    metadata = gh.metadata(create=True, project_id=identity["project_id"])
+    autostart.verify_onboarding_identity(gh, identity)
+    save_project_config(root, config)
+    return {"mode": "chat", "config": str(root / ".sfc/config.json"), "project_id": metadata["id"],
+            "merge_policy": "human", "dashboard": gh.configure_dashboard()}
+
+
+def doctor_chat(root):
+    config = load_config(root)
+    gh = GitHub(root, config)
+    gh.verify_repository()
+    dashboard = gh.dashboard()
+    return {"mode": "chat", "ready": True, "onboarding_complete": dashboard["ready"],
+            "dashboard": dashboard, "worker_timeout": config["worker_timeout"],
+            "verify_commands": config["verify_commands"],
+            "verify_command_count": len(config["verify_commands"]),
+            "verify_timeout": config["verify_timeout"],
+            "worker_execution": "current Codex chat", "board_execution": False}
 
 
 def doctor(root):
@@ -184,7 +232,7 @@ def doctor(root):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="SFC: Codex software factory")
+    parser = argparse.ArgumentParser(description="SFC: track Codex chat work on GitHub Projects")
     parser.add_argument("--version", action="version", version=__version__)
     parser.add_argument("--root", default=".", help="target repository, not the plugin directory")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -196,42 +244,39 @@ def main(argv=None):
     setup.add_argument("--status-field", default="SFC Status")
     setup.add_argument("--activity-timezone", default="UTC",
                        help="IANA timezone for card report times (default: UTC); receipts remain UTC")
-    setup.add_argument("--verify", action="append", required=True, help="project check; repeat for multiple checks")
+    setup.add_argument("--verify", action="append", help="optional project check; repeat for multiple checks")
     setup.add_argument('--efficiency-profile', choices=('auto', 'sfc-python', 'sfc-python-docs', 'off'), default='auto',
-                       help='detect supported source-only reuse contracts; unsupported projects keep fresh checks')
-    setup.add_argument('--preview', action='store_true', help='read-only unified setup review before applying choices')
-    setup.add_argument('--expected-review', help='apply the exact review_digest from --preview; required for new merge/release authority')
-    setup.add_argument('--allow-merge', action='store_true', help='authorize the reviewed watcher merge scope; otherwise merge remains pending')
-    setup.add_argument('--release-config', type=Path, help='project-owned release object: package/check commands, artifacts, version and trigger')
-    setup.add_argument('--release-mode', choices=('publish', 'draft', 'off'), default='publish')
-    setup.add_argument('--release-authorization', help='explicit authorization ID for the reviewed release repository/base/mode')
-    setup.add_argument('--review-efficiency', choices=('qualified', 'baseline'), default='qualified')
-    setup.add_argument("--merge-policy", choices=("human", "auto"), default="auto",
-                       help="new project policy (default: auto); human leaves merging to you; "
-                            "auto still needs separate run/watch merge authority")
+                       help=argparse.SUPPRESS)
+    setup.add_argument('--preview', action='store_true', help='verify the repository and Project before applying setup')
+    setup.add_argument('--expected-review', help='require the same configuration and Project identity as --preview')
+    setup.add_argument('--allow-merge', action='store_true', help=argparse.SUPPRESS)
+    setup.add_argument('--release-config', type=Path, help=argparse.SUPPRESS)
+    setup.add_argument('--release-mode', choices=('publish', 'draft', 'off'), default='publish', help=argparse.SUPPRESS)
+    setup.add_argument('--release-authorization', help=argparse.SUPPRESS)
+    setup.add_argument('--review-efficiency', choices=('qualified', 'baseline'), default='qualified', help=argparse.SUPPRESS)
+    setup.add_argument("--merge-policy", choices=("human", "auto"),
+                       help="chat tracking leaves merging to you (human)")
     setup.add_argument("--merge-mode", choices=("github-protected", "local-verification"),
-                       default="github-protected", help="local-verification lands the exact reviewed head by atomic fast-forward only")
+                       default="github-protected", help=argparse.SUPPRESS)
     setup.add_argument("--allow-no-checks", action="store_true",
-                       help="explicitly accept absent GitHub checks; existing checks must still pass")
-    setup.add_argument('--auto-start', action=argparse.BooleanOptionalAction, default=True,
-                       help='start watching on trusted project chat events (default: on); '
-                            '--no-auto-start disables it; does not authorize auto merge')
+                       help=argparse.SUPPRESS)
+    setup.add_argument('--auto-start', action=argparse.BooleanOptionalAction, default=None,
+                       help=argparse.SUPPRESS)
     setup.add_argument('--session-lifetime', action=argparse.BooleanOptionalAction, default=None,
-                       help='watch throughout each loaded native project chat (default when auto-start is on; macOS); '
-                            '--no-session-lifetime selects legacy bounded watching')
+                       help=argparse.SUPPRESS)
     setup.add_argument('--pickup', action=argparse.BooleanOptionalAction, default=True,
-                       help='automatically claim eligible Backlog/Ready work; --no-pickup keeps watching without new work-ticket claims')
+                       help=argparse.SUPPRESS)
     for key in ('poll_interval', 'max_seconds', 'max_polls', 'max_claims'):
-        setup.add_argument('--watch-' + key.replace('_', '-'), type=int)
-    setup.add_argument('--watch-exclude-issue', dest='watch_excluded_issues', type=int, action='append', help='exclude issue number; repeat')
-    setup.add_argument('--watch-hold-label')
-    setup.add_argument("--model", help="worker model; default preset unless qualified selection is requested; 'inherit' uses Codex settings")
+        setup.add_argument('--watch-' + key.replace('_', '-'), type=int, help=argparse.SUPPRESS)
+    setup.add_argument('--watch-exclude-issue', dest='watch_excluded_issues', type=int, action='append', help=argparse.SUPPRESS)
+    setup.add_argument('--watch-hold-label', help=argparse.SUPPRESS)
+    setup.add_argument("--model", help=argparse.SUPPRESS)
     setup.add_argument("--reasoning-effort", choices=(*REASONING_EFFORTS, "inherit"),
-                       help="worker reasoning effort")
+                       help=argparse.SUPPRESS)
     setup.add_argument("--service-tier",
-                       help="requested worker speed tier; 'inherit' uses Codex settings")
+                       help=argparse.SUPPRESS)
     sub.add_parser("doctor", help="read-only readiness checks")
-    sub.add_parser('onboard-finish', help='complete only the saved pending watching choice after dashboard repair')
+    sub.add_parser('onboard-finish', help='verify the saved Project after dashboard repair')
     migration = sub.add_parser('efficiency-profile', help='preview/apply bounded efficiency contracts; no run authority')
     migration.add_argument('--profile', choices=('auto', 'sfc-python', 'sfc-python-docs', 'off'), default='auto')
     migration.add_argument('--apply', action='store_true')
@@ -266,6 +311,28 @@ def main(argv=None):
     ticket_parser.add_argument("--label", action="append", default=[], help="existing auxiliary label; repeat; qa requires explicit workflow intent")
     ticket_parser.add_argument("--reason", required=True, help="assessment with supporting evidence")
     ticket_parser.add_argument("--unknowns", required=True, help="confidence and unsupported rubric dimensions")
+    tracker = sub.add_parser('track', help='record work from this chat on the configured Project')
+    tracking = tracker.add_subparsers(dest='action', required=True)
+    tracking.add_parser('enable', help='use chat tracking for this configured project')
+    tracked_start = tracking.add_parser('start', help='queue a new chat task or link a Project issue')
+    tracked_start.add_argument('--task', required=True)
+    tracked_start.add_argument('--title', required=True)
+    tracked_start.add_argument('--summary', required=True)
+    tracked_start.add_argument('--type', dest='work_type', choices=tuple(TYPES))
+    tracked_start.add_argument('--acceptance', action='append', default=[])
+    tracked_start.add_argument('--issue', type=int)
+    tracked_update = tracking.add_parser('update', help='queue an observed milestone and its evidence')
+    tracked_update.add_argument('--task', required=True)
+    tracked_update.add_argument('--event', required=True)
+    tracked_update.add_argument('--stage', choices=chat_tracking.STAGES, required=True)
+    tracked_update.add_argument('--summary', required=True)
+    tracked_update.add_argument('--pr', type=int)
+    tracked_update.add_argument('--local-done', action='store_true')
+    tracked_status = tracking.add_parser('status', help='read the local issue binding and pending milestones')
+    select_task = tracked_status.add_mutually_exclusive_group(required=True)
+    select_task.add_argument('--task')
+    select_task.add_argument('--prefix')
+    tracking.add_parser('sync', help='sync one task and read back the board state').add_argument('--task', required=True)
     release = sub.add_parser("release-request", help="create a frozen versioned release card; no publication")
     release.add_argument("--version", help="explicit version; otherwise configured plain-text version_file")
     release.add_argument("--recover-creation", action="store_true",
@@ -334,12 +401,17 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         root = repo_root(args.root)
+        if (((args.command in ('run', 'watch') and not args.dry_run) or
+             (args.command == 'autostart' and args.enable) or
+             (args.command in ('recover-ticket', 'recover-findings', 'recover-worker-output') and args.grant_one))
+                and chat_tracking.chat_mode(chat_tracking.project_root(root))):
+            raise Halt('SFC runs work in your Codex chat. Ask Codex to continue the ticket and record its milestones with sfc track.')
         if args.command == "onboard":
             if args.preview:
-                result = onboard(root, args)
+                result = onboard_chat(root, args)
             else:
                 with exclusive(root), creation_lock(root):
-                    result = onboard(root, args)
+                    result = onboard_chat(root, args)
         elif args.command == 'setup-defaults':
             if args.apply:
                 with exclusive(root):
@@ -366,6 +438,8 @@ def main(argv=None):
                                               explicit_profile=True,
                                               review_qualification=args.review_qualification,
                                               model_qualification=args.model_qualification)
+        elif args.command == 'onboard-finish' and chat_tracking.chat_mode(root):
+            result = doctor_chat(root)
         elif args.command == 'onboard-finish':
             with exclusive(root), creation_lock(root):
                 result = onboarding.finish(root, GitHub(root, load_config(root)))
@@ -423,6 +497,21 @@ def main(argv=None):
             result = create_ticket(gh, root, request_id=args.request_id, title=args.title,
                                    body=Path(args.body_file).read_text(), priority=args.priority,
                                    reason=args.reason, unknowns=args.unknowns, work_type=args.work_type, labels=args.label)
+        elif args.command == 'track':
+            root = chat_tracking.project_root(root)
+            config = load_config(root)
+            if args.action == 'enable':
+                result = chat_tracking.enable(root)
+            elif args.action == 'start':
+                result = chat_tracking.start(root, config, task=args.task, title=args.title, summary=args.summary,
+                                             work_type=args.work_type, acceptance=args.acceptance, issue=args.issue)
+            elif args.action == 'update':
+                result = chat_tracking.update(root, config, task=args.task, event_id=args.event, stage=args.stage,
+                                              summary=args.summary, pr=args.pr, local_done=args.local_done)
+            elif args.action == 'status':
+                result = chat_tracking.status(root, config, task=args.task, prefix=args.prefix)
+            else:
+                result = chat_tracking.sync(GitHub(root, config), root, args.task)
         elif args.command == "watch-status":
             result = watch_status(root)
         elif args.command == 'recover-worker-output':
@@ -472,7 +561,7 @@ def main(argv=None):
             legacy.touch()
             result = {"stop_requested": True, "detail": "Supervisor observes this flag and terminates owned child process groups; no unrelated process is signalled"}
         elif args.command == "doctor":
-            result = doctor(root)
+            result = doctor_chat(root) if chat_tracking.chat_mode(root) else doctor(root)
         else:
             factory = Factory(root)
             if args.command in ("run", "watch"):
