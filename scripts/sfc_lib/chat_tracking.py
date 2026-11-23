@@ -222,9 +222,8 @@ def verified_card(gh, record):
     return pickup.card(gh, issue['item_id'], pinned, expected=issue)
 
 
-def observe_pr(gh, number, base):
-    pr = gh.chat_pr(number)
-    expected = f"https://github.com/{gh.c['repo']}/pull/{number}"
+def observe_pr(pr, number, base, repository):
+    expected = f"https://github.com/{repository}/pull/{number}"
     if (not isinstance(pr, dict) or type(pr.get('number')) is not int or pr['number'] != number or
             pr.get('baseRefName') != base or not isinstance(pr.get('url'), str) or
             pr['url'].casefold() != expected.casefold() or
@@ -241,6 +240,18 @@ def observe_pr(gh, number, base):
         ci = 'failed' if check_explanation(pr)['code'] == 'ci_failed' else 'running'
     return {'url': expected, 'state': pr['state'], 'draft': pr.get('isDraft'),
             'head': pr.get('headRefOid'), 'ci': ci, 'observed_at': now()}
+
+
+def observe_closing_pr(gh, record):
+    pr = gh.chat_closing_pr(record['issue'])
+    if pr is None:
+        return None
+    repository = pr['repository']['nameWithOwner']
+    number = pr['number']
+    if (not isinstance(repository, str) or re.fullmatch(r'[A-Za-z0-9-]+/[A-Za-z0-9_.-]+', repository) is None
+            or type(number) is not int or number <= 0):
+        raise Halt('GitHub closing pull request identity could not be verified')
+    return observe_pr(pr, number, record['scope']['base_branch'], repository)
 
 
 def sync_stage(gh, path, record, card, event):
@@ -299,19 +310,33 @@ def sync(gh, root, task):
             raise Halt('Tracking configuration changed before sync')
         number = record.get('pr')
         latest = record['events'][-1]
-        follow_pr = number and latest['stage'] != 'Done'
-        if not follow_pr and all(event.get('synced') for event in record['events']):
+        follow_pr = number is not None and latest['stage'] != 'Done'
+        pending = any(not event.get('synced') for event in record['events'])
+        closing_pr_url = latest.get('closing_pr_url') if pending else None
+        follow_closure = (number is None and record.get('delivery') != 'local-only'
+                          and (latest['stage'] in ('QA', 'Review') or closing_pr_url is not None))
+        if not (follow_pr or follow_closure or pending):
             return {'state': 'synced', **view(record)}
         try:
             if not record.get('issue'):
                 bind_issue(gh, root, path, record)
-            pull = observe_pr(gh, number, record['scope']['base_branch']) if number else None
+            pull = None
+            if number is not None:
+                pull = observe_pr(gh.chat_pr(number), number, record['scope']['base_branch'], gh.c['repo'])
+            elif follow_closure:
+                pull = observe_closing_pr(gh, record)
+            if closing_pr_url is not None and (pull is None or pull['url'] != closing_pr_url):
+                raise Halt('The verified closing pull request changed before Done synced')
             if pull:
                 record['pull_request'] = pull
-                if follow_pr and pull['state'] == 'MERGED':
-                    # This ID is outside the public milestone-ID alphabet. Save it before any board write.
-                    record['events'].append({'id': 'sfc:pr-merged', 'stage': 'Done', 'pr': number,
-                                             'summary': 'GitHub confirmed the linked pull request merged.'})
+                if latest['stage'] != 'Done' and pull['state'] == 'MERGED':
+                    # Save the completion event before writing either status field.
+                    completion = {'id': 'sfc:pr-merged', 'stage': 'Done', 'pr': number,
+                                  'summary': 'GitHub confirmed the linked pull request merged.'}
+                    if follow_closure:
+                        completion['closing_pr_url'] = pull['url']
+                        completion['summary'] = 'GitHub confirmed the linked pull request merged and closed this issue.'
+                    record['events'].append(completion)
                     write_json(path, record)
             for event in record['events']:
                 if event.get('synced'):
@@ -319,7 +344,10 @@ def sync(gh, root, task):
                 if pull and event['stage'] == 'Done' and pull['state'] != 'MERGED':
                     raise Halt('The linked pull request has not merged')
                 url = pull['url'] if pull and (event.get('pr') or event['stage'] in ('Review', 'Done')) else None
-                sync_stage(gh, path, record, verified_card(gh, record), event)
+                card = verified_card(gh, record)
+                if event.get('closing_pr_url') and card['state'] != 'CLOSED':
+                    raise Halt('The tracked issue reopened before Done synced')
+                sync_stage(gh, path, record, card, event)
                 sync_note(gh, path, record, event, url)
                 event['synced'] = now()
                 write_json(path, record)

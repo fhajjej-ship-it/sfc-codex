@@ -63,7 +63,10 @@ Each sync refreshes the active linked PR and reports the observed CI state.
 After a manual merge, the next sync verifies the PR's repository and base,
 then writes and reads back Done in SFC Status and the standard Status field
 when present. A PR closed without merging leaves the card at its current
-milestone. Run sync at a chat checkpoint to reflect changes made on GitHub.
+milestone. For a QA or Review task without a saved PR number, SFC can
+reconcile a cross-repository merge when GitHub confirms that the single
+linked PR merged into the configured base and closed the tracked issue.
+Run sync at a chat checkpoint to reflect changes made on GitHub.
 
 `start` and `update` save milestones locally before any GitHub call.
 Sync Building before editing and sync later milestones as they happen.

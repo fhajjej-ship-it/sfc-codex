@@ -13,11 +13,14 @@ import sfc
 from test_pickup import PickupGitHub, ticket
 from sfc_lib import autostart, chat_tracking
 from sfc_lib.common import Halt, common_dir, exclusive, git, load_config, read_json, run, write_json
+from sfc_lib.github import GitHub
 from sfc_lib.session_runtime import SessionRuntime, request_attachment
 from sfc_lib.ticket_coordination import ticket_directory
 
 
 class TrackingGitHub(PickupGitHub):
+    chat_closing_pr = GitHub.chat_closing_pr
+
     def __init__(self, root, cards):
         super().__init__(root, cards)
         self.comments = []
@@ -25,6 +28,15 @@ class TrackingGitHub(PickupGitHub):
         self.pull = {'number': 41, 'baseRefName': 'main', 'state': 'OPEN', 'isDraft': False,
                      'url': 'https://github.com/example/app/pull/41', 'statusCheckRollup': []}
         self.pr_reads = []
+        self.closing_links = {'totalCount': 0, 'nodes': []}
+        self.closer = None
+
+    def graphql(self, query, variables):
+        if 'closedByPullRequestsReferences' in query:
+            issue = next(item for item in self.items if item['id'] == variables['issue'])
+            return {'node': {**issue, 'closedByPullRequestsReferences': self.closing_links,
+                             'timelineItems': {'nodes': [{'closer': self.closer}]}}}
+        return super().graphql(query, variables)
 
     def chat_pr(self, number):
         self.pr_reads.append(number)
@@ -162,6 +174,75 @@ class ChatTrackingTests(unittest.TestCase):
         self.gh.pull.update(state='MERGED', baseRefName='develop')
         self.assertEqual(self.sync()['state'], 'pending')
         self.assertEqual(self.gh.items[0]['status'], 'Review')
+
+    def set_cross_repo_closure(self):
+        pr = {**self.gh.pull, 'id': 'public-pr-41', 'state': 'MERGED', 'isDraft': False,
+              'repository': {'nameWithOwner': 'example/public-app'},
+              'url': 'https://github.com/example/public-app/pull/41'}
+        self.gh.closing_links = {'totalCount': 1, 'nodes': [pr]}
+        self.gh.closer = {'id': pr['id']}
+        self.gh.items[0]['state'] = 'CLOSED'
+        return pr
+
+    def test_verified_cross_repo_closure_syncs_both_status_fields(self):
+        self.gh.github_status['item-1'] = 'done'
+        self.start()
+        self.update('reviewed', 'Review')
+        self.assertEqual(self.sync()['board_stage'], 'Review')
+        pr = self.set_cross_repo_closure()
+
+        result = self.sync()
+        self.assertEqual((result['state'], result['board_stage'], result['pending']), ('synced', 'Done', []))
+        self.assertEqual(result['pull_request']['url'], pr['url'])
+        self.assertIsNone(result['pr'])
+        self.assertEqual(self.gh.items[0]['status'], 'Done')
+        self.assertEqual(self.gh.github_status['item-1'], 'done')
+        self.assertEqual(self.gh.github_status_writes, [])
+        self.assertIn(pr['url'], self.gh.comments[-1]['body'])
+        self.assertEqual(self.gh.pr_reads, [])
+        self.assertEqual(self.gh.merges, [])
+        self.assertEqual(self.sync(), result)
+        self.assertEqual(self.gh.writes.count((1, 'Done')), 1)
+
+    def test_unverified_closures_preserve_review(self):
+        self.start()
+        self.update('reviewed', 'Review')
+        self.sync()
+        failures = ('open issue', 'manual closure', 'multiple links', 'closed PR', 'wrong base', 'wrong URL')
+        for failure in failures:
+            with self.subTest(failure=failure):
+                pr = self.set_cross_repo_closure()
+                if failure == 'open issue':
+                    self.gh.items[0]['state'] = 'OPEN'
+                elif failure == 'manual closure':
+                    self.gh.closer = None
+                elif failure == 'multiple links':
+                    self.gh.closing_links['totalCount'] = 2
+                elif failure == 'closed PR':
+                    pr['state'] = 'CLOSED'
+                elif failure == 'wrong base':
+                    pr['baseRefName'] = 'develop'
+                else:
+                    pr['url'] = 'https://github.com/example/unspecified/pull/41'
+                self.assertEqual(self.sync()['board_stage'], 'Review')
+        self.assertNotIn((1, 'Done'), self.gh.writes)
+
+    def test_interrupted_cross_repo_completion_rechecks_its_pinned_link(self):
+        self.gh.github_status['item-1'] = 'in-progress'
+        self.start()
+        self.update('reviewed', 'Review')
+        self.sync()
+        pr = self.set_cross_repo_closure()
+        with patch.object(self.gh, 'write_done_status', side_effect=Halt('Temporary failure')):
+            self.assertEqual(self.sync()['pending'], ['sfc:pr-merged'])
+
+        self.gh.closer = None
+        self.assertEqual(self.sync()['state'], 'pending')
+        self.assertEqual(self.gh.github_status['item-1'], 'in-progress')
+        self.gh.closer = {'id': pr['id']}
+        self.assertEqual(self.sync()['state'], 'synced')
+        self.assertEqual(self.gh.github_status['item-1'], 'done')
+        self.assertEqual(self.gh.writes.count((1, 'Done')), 1)
 
     def test_pr_required_decision_is_saved_and_prevents_local_completion(self):
         with self.assertRaisesRegex(Halt, 'Choose --delivery'):
