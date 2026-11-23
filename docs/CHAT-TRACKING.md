@@ -40,21 +40,24 @@ python3 "<plugin>/scripts/sfc.py" --root "<repo>" track start \
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track sync --task chat-example-export
 ```
 
-Record tests, pull requests and review milestones as they occur. A locally
-delivered change can go from Building straight to Done. A genuine blocker
-can be recorded as Blocked and later followed by Building or QA. Attach the
-PR number when recording a pull request in Review. A task with a linked PR reaches Done once
-the tracker confirms it merged into the configured base. For work delivered
-locally, record the evidence and pass `--local-done`.
+After focused checks pass, open an authorized draft PR during QA so GitHub CI
+can run during verification. Attach its number to the QA milestone. Record
+Review when the change is reviewed. A genuine blocker can be recorded as
+Blocked and later followed by Building or QA. For verified local delivery,
+record the evidence and use `--local-done`.
 
 ```sh
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track update \
-  --task chat-example-export --event tests --stage QA --summary "The CSV export tests passed."
-python3 "<plugin>/scripts/sfc.py" --root "<repo>" track update \
-  --task chat-example-export --event reviewed --stage Review --pr 42 \
-  --summary "PR opened for review. Project checks passed."
+  --task chat-example-export --event draft --stage QA --pr 42 \
+  --summary "Focused CSV export tests passed. A draft PR is open for CI."
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track sync --task chat-example-export
 ```
+
+Each sync refreshes the active linked PR and reports the observed CI state.
+After a manual merge, the next sync verifies the PR's repository and base,
+then writes and reads back Done in SFC Status and the standard Status field
+when present. A PR closed without merging leaves the card at its current
+milestone. Run sync at a chat checkpoint to reflect changes made on GitHub.
 
 `start` and `update` save milestones locally before any GitHub call.
 Sync Building before editing and sync later milestones as they happen.

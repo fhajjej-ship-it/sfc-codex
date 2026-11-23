@@ -25,10 +25,13 @@ plugin code and skills read-only.
    occurs, record actual evidence with `track update` and sync. Keep
    transcripts, credentials, logs and private paths local. During a GitHub
    outage, keep working and retry pending updates at the next checkpoint.
-3. Open or merge a PR only with the user's authority and the repository's
-   normal verification. Record the PR number so SFC can verify the merge
-   before syncing Done. For a verified change delivered locally, use
-   `--local-done`. Explain any pending board updates in the chat.
+3. When authorized to open a PR, open it as a draft during QA after the
+   focused checks pass. Record the PR number with the QA milestone so GitHub
+   CI can run while verification continues. Move to Review as the change is
+   reviewed and follow the repository's normal checks and merge permissions.
+   Sync the task after CI or a merge. SFC reports the latest observed PR and
+   CI state and records Done when GitHub confirms the merge. For a verified
+   local delivery, use `--local-done`. Explain pending updates in chat.
 
 Routine questions and status checks need no ticket. See
 [chat tracking](../../docs/CHAT-TRACKING.md) for commands and examples.

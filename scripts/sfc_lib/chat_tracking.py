@@ -9,6 +9,7 @@ import re
 
 from . import pickup
 from .common import Busy, Halt, common_dir, exclusive, git, load_config, now, read_json, repo_root, write_json
+from .factory import check_explanation, checks_pass
 from .priority import create_ticket
 from .ticket_coordination import creation_lock, recorded_request
 from .work_types import TYPES
@@ -75,7 +76,8 @@ def local_lock(path):
 def view(record):
     latest = record['events'][-1]
     return {'task': record['task'], 'title': record['title'], 'issue': record.get('issue'),
-            'pr': record.get('pr'), 'desired_stage': latest['stage'],
+            'pr': record.get('pr'), 'pull_request': record.get('pull_request'),
+            'desired_stage': latest['stage'],
             'latest_summary': latest['summary'] or record['summary'],
             'board_stage': record.get('board_stage'),
             'pending': [event['id'] for event in record['events'] if not event.get('synced')]}
@@ -204,14 +206,25 @@ def verified_card(gh, record):
     return pickup.card(gh, issue['item_id'], pinned, expected=issue)
 
 
-def verified_pr(gh, number, base, *, merged=False):
-    pr = gh.pr(number)
+def observe_pr(gh, number, base):
+    pr = gh.chat_pr(number)
     expected = f"https://github.com/{gh.c['repo']}/pull/{number}"
-    if (pr.get('number') != number or pr.get('baseRefName') != base or
-            pr.get('url', '').casefold() != expected.casefold() or
-            pr.get('state') not in (('MERGED',) if merged else ('OPEN', 'MERGED'))):
-        raise Halt('The linked pull request or required merge could not be verified')
-    return expected
+    if (not isinstance(pr, dict) or type(pr.get('number')) is not int or pr['number'] != number or
+            pr.get('baseRefName') != base or not isinstance(pr.get('url'), str) or
+            pr['url'].casefold() != expected.casefold() or
+            pr.get('state') not in ('OPEN', 'CLOSED', 'MERGED')):
+        raise Halt('The linked pull request repository, base, or state could not be verified')
+    checks = pr.get('statusCheckRollup')
+    if not isinstance(checks, list) or any(not isinstance(check, dict) for check in checks):
+        ci = 'unknown'
+    elif not checks:
+        ci = 'not-reported'
+    elif checks_pass(pr):
+        ci = 'passed'
+    else:
+        ci = 'failed' if check_explanation(pr)['code'] == 'ci_failed' else 'running'
+    return {'url': expected, 'state': pr['state'], 'draft': pr.get('isDraft'),
+            'head': pr.get('headRefOid'), 'ci': ci, 'observed_at': now()}
 
 
 def sync_stage(gh, path, record, card, event):
@@ -268,18 +281,28 @@ def sync(gh, root, task):
         record = read_task(path, load_config(root))
         if scope(gh.c) != record['scope']:
             raise Halt('Tracking configuration changed before sync')
-        if all(event.get('synced') for event in record['events']):
+        number = record.get('pr')
+        latest = record['events'][-1]
+        follow_pr = number and latest['stage'] != 'Done'
+        if not follow_pr and all(event.get('synced') for event in record['events']):
             return {'state': 'synced', **view(record)}
         try:
             if not record.get('issue'):
                 bind_issue(gh, root, path, record)
+            pull = observe_pr(gh, number, record['scope']['base_branch']) if number else None
+            if pull:
+                record['pull_request'] = pull
+                if follow_pr and pull['state'] == 'MERGED':
+                    # This ID is outside the public milestone-ID alphabet. Save it before any board write.
+                    record['events'].append({'id': 'sfc:pr-merged', 'stage': 'Done', 'pr': number,
+                                             'summary': 'GitHub confirmed the linked pull request merged.'})
+                    write_json(path, record)
             for event in record['events']:
                 if event.get('synced'):
                     continue
-                number = event.get('pr') or record.get('pr')
-                url = None
-                if number and event['stage'] in ('Review', 'Done'):
-                    url = verified_pr(gh, number, record['scope']['base_branch'], merged=event['stage'] == 'Done')
+                if pull and event['stage'] == 'Done' and pull['state'] != 'MERGED':
+                    raise Halt('The linked pull request has not merged')
+                url = pull['url'] if pull and (event.get('pr') or event['stage'] in ('Review', 'Done')) else None
                 sync_stage(gh, path, record, verified_card(gh, record), event)
                 sync_note(gh, path, record, event, url)
                 event['synced'] = now()

@@ -543,6 +543,11 @@ class GitHub:
             raise Halt("PR identity or state could not be verified")
         return pr["state"]
 
+    def chat_pr(self, number):
+        """Read the linked PR and its checks without listing its changed files."""
+        return self.call("pr", "view", number, "--repo", self.c["repo"], "--json",
+                         "number,url,state,baseRefName,headRefOid,isDraft,statusCheckRollup")
+
     def pr(self, number):
         pr = self.call("pr", "view", number, "--repo", self.c["repo"], "--json",
                        "id,number,url,body,state,headRefOid,baseRefName,headRefName,isCrossRepository,mergeStateStatus,isDraft,statusCheckRollup,additions,deletions")

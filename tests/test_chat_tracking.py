@@ -22,10 +22,12 @@ class TrackingGitHub(PickupGitHub):
         super().__init__(root, cards)
         self.comments = []
         self.lose_note_response = False
-        self.pull = {'number': 41, 'baseRefName': 'main', 'state': 'OPEN',
-                     'url': 'https://github.com/example/app/pull/41'}
+        self.pull = {'number': 41, 'baseRefName': 'main', 'state': 'OPEN', 'isDraft': False,
+                     'url': 'https://github.com/example/app/pull/41', 'statusCheckRollup': []}
+        self.pr_reads = []
 
-    def pr(self, number):
+    def chat_pr(self, number):
+        self.pr_reads.append(number)
         return self.pull.copy()
 
     def move(self, card, status):
@@ -87,6 +89,79 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.gh.github_status['item-1'], 'done')
         self.assertIn('https://github.com/example/app/pull/41', self.gh.comments[-1]['body'])
         self.assertEqual(self.proc.lanes, [])
+
+    def test_draft_ci_and_manual_merge_sync_both_status_fields(self):
+        self.gh.github_status['item-1'] = 'in-progress'
+        git(self.root, 'switch', '-c', 'topic')
+        (self.root / 'value.txt').write_text('Ready to merge\n')
+        git(self.root, 'add', 'value.txt')
+        git(self.root, 'commit', '-m', 'Implement selected export')
+        candidate = git(self.root, 'rev-parse', 'HEAD')
+        git(self.root, 'switch', 'main')
+        self.gh.pull.update(isDraft=True, headRefOid=candidate,
+                            statusCheckRollup=[{'status': 'IN_PROGRESS', 'conclusion': ''}])
+
+        self.start()
+        self.update('draft', 'QA', pr=41)
+        qa = self.sync()
+        self.assertEqual(qa['board_stage'], 'QA')
+        self.assertEqual((qa['pull_request']['draft'], qa['pull_request']['ci']), (True, 'running'))
+        self.assertIn(self.gh.pull['url'], self.gh.comments[-1]['body'])
+        self.assertEqual(self.gh.pr_reads, [41])
+
+        self.gh.pull.update(isDraft=False, statusCheckRollup=[{'status': 'COMPLETED', 'conclusion': 'FAILURE'}])
+        self.update('reviewed', 'Review')
+        self.assertEqual(self.sync()['pull_request']['ci'], 'failed')
+        self.gh.pull['state'] = 'CLOSED'
+        closed = self.sync()
+        self.assertEqual((closed['board_stage'], closed['pull_request']['state']), ('Review', 'CLOSED'))
+        self.assertEqual(self.gh.github_status['item-1'], 'in-progress')
+
+        # The operator merges the temporary branch. GitHub's adapter observes the result.
+        git(self.root, 'merge', '--no-ff', 'topic', '-m', 'Manually merge export')
+        run(['git', 'merge-base', '--is-ancestor', candidate, 'HEAD'], self.root)
+        self.gh.pull.update(state='MERGED', statusCheckRollup=[{'status': 'COMPLETED', 'conclusion': 'SUCCESS'}])
+        done = self.sync()
+        self.assertEqual((done['state'], done['pending'], done['pull_request']['ci']), ('synced', [], 'passed'))
+        self.assertEqual(self.gh.items[0]['status'], 'Done')
+        self.assertEqual(self.gh.github_status['item-1'], 'done')
+        self.assertEqual(self.gh.github_status_writes, ['item-1'])
+        self.assertEqual(self.gh.pr_reads, [41, 41, 41, 41])
+        self.assertEqual(self.gh.merges, [])
+        self.assertEqual(self.proc.lanes, [])
+
+        notes = self.gh.comments.copy()
+        self.assertEqual(self.sync(), done)
+        self.assertEqual(self.gh.comments, notes)
+        self.assertEqual(self.gh.pr_reads, [41, 41, 41, 41])
+
+    def test_verified_manual_merge_retries_an_interrupted_status_readback(self):
+        self.gh.github_status['item-1'] = 'in-progress'
+        self.start()
+        self.update('reviewed', 'Review', pr=41)
+        self.sync()
+        self.gh.pull['state'] = 'MERGED'
+        write = self.gh.write_done_status
+
+        def drop_response(scope):
+            write(scope)
+            raise Halt('Fixture lost the status response after the update')
+
+        with patch.object(self.gh, 'write_done_status', side_effect=drop_response):
+            self.assertEqual(self.sync()['state'], 'pending')
+        done = self.sync()
+        self.assertEqual((done['state'], done['board_stage'], done['pending']), ('synced', 'Done', []))
+        self.assertEqual(self.gh.github_status['item-1'], 'done')
+        self.assertEqual(self.gh.github_status_writes, ['item-1'])
+        self.assertEqual(self.gh.writes.count((1, 'Done')), 1)
+
+    def test_merge_observation_preserves_the_board_for_a_different_base(self):
+        self.start()
+        self.update('reviewed', 'Review', pr=41)
+        self.sync()
+        self.gh.pull.update(state='MERGED', baseRefName='develop')
+        self.assertEqual(self.sync()['state'], 'pending')
+        self.assertEqual(self.gh.items[0]['status'], 'Review')
 
     def test_github_failure_queues_updates_and_note_readback_prevents_duplicate(self):
         self.start()
