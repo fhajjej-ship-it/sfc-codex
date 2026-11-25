@@ -405,6 +405,21 @@ class ChatMergeTests(unittest.TestCase):
             self.call()
         self.assertNotIn('delivery_attempts', read_json(self.path))
 
+    def test_newly_reachable_root_credentials_are_checked_despite_log_config(self):
+        git(self.root, 'switch', '--orphan', 'imported')
+        (self.root / 'ordinary.txt').write_text('++sk-' + 'x' * 30 + '\n')
+        git(self.root, 'add', 'ordinary.txt'); git(self.root, 'commit', '-m', 'Imported root')
+        git(self.root, 'rm', 'ordinary.txt'); git(self.root, 'commit', '-m', 'Remove imported credential')
+        git(self.root, 'switch', 'topic')
+        git(self.root, 'merge', '--allow-unrelated-histories', '--no-ff', 'imported', '-m', 'Import history')
+        git(self.root, 'config', 'log.showRoot', 'false')
+        self.head = git(self.root, 'rev-parse', 'HEAD')
+        git(self.root, 'push', 'origin', 'topic')
+        with self.assertRaisesRegex(Halt, 'live-looking credential'):
+            self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+        self.assertEqual(self.gh.attempts, [])
+
     def test_historical_nonascii_credential_paths_are_not_git_display_strings(self):
         path = self.root / 'café' / 'id_rsa'
         path.parent.mkdir(); path.write_text('fixture credential file')

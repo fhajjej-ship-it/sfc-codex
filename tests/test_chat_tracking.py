@@ -804,6 +804,28 @@ class ChatTrackingTests(unittest.TestCase):
                 self.assertIn('your Codex chat', error.getvalue())
                 legacy.assert_not_called()
 
+    def test_administration_ignores_stale_linked_project_configuration(self):
+        checkout = self.root.parent / 'linked-admin-copy'
+        git(self.root, 'worktree', 'add', '--detach', checkout)
+        copied = {**self.c, 'project': {'owner': 'other-owner', 'number': 999}}
+        write_json(checkout / '.sfc/config.json', copied)
+        original = (checkout / '.sfc/config.json').read_bytes()
+        for command in ('doctor', 'onboard-finish', 'dashboard', 'priority-setup', 'type-setup'):
+            options = ([], ['--apply']) if command in ('dashboard', 'priority-setup', 'type-setup') else ([],)
+            for flags in options:
+                with self.subTest(command=command, flags=flags), patch.object(sfc, 'GitHub') as github, \
+                     patch.object(sfc, 'doctor_chat', return_value={'ready': True}) as doctor:
+                    for method in ('dashboard', 'configure_dashboard', 'priority_setup', 'type_setup'):
+                        getattr(github.return_value, method).return_value = {'ready': True}
+                    with redirect_stdout(io.StringIO()):
+                        self.assertEqual(sfc.main(['--root', str(checkout), command, *flags]), 0)
+                    if command in ('doctor', 'onboard-finish'):
+                        doctor.assert_called_once_with(self.root.resolve())
+                    else:
+                        self.assertEqual(github.call_args.args[0], self.root.resolve())
+                        self.assertEqual(github.call_args.args[1]['project'], self.c['project'])
+        self.assertEqual((checkout / '.sfc/config.json').read_bytes(), original)
+
     def test_merge_cli_uses_primary_authority_even_with_a_copied_linked_config(self):
         checkout = self.root.parent / 'linked-copy'
         git(self.root, 'worktree', 'add', '--detach', checkout)

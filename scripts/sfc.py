@@ -441,7 +441,7 @@ def main(argv=None):
     try:
         root = repo_root(args.root)
         if args.command in ('doctor', 'onboard-finish', 'dashboard', 'priority-setup', 'type-setup'):
-            root = chat_tracking.project_root(root)
+            root = chat_tracking.primary_root(root)
         if (((args.command in ('run', 'watch') and not args.dry_run) or
              (args.command == 'autostart' and args.enable) or
              (args.command in ('recover-ticket', 'recover-findings', 'recover-worker-output') and args.grant_one))

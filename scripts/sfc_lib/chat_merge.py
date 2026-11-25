@@ -194,7 +194,7 @@ class Delivery:
                 if '-' in (a, d):
                     raise Halt('Binary changes require a maintainer handoff')
                 lines += int(a) + int(d)
-        history = ['git', '--no-replace-objects', 'log', '--no-color', '--format=', '--no-renames', '--diff-merges=separate']
+        history = ['git', '--no-replace-objects', 'log', '--root', '--no-color', '--format=', '--no-renames', '--diff-merges=separate']
         messages = run(['git', '--no-replace-objects', 'log', '--no-color', '--format=%B%x00', self.base + '..' + self.head], self.wt).stdout
         commit_closure_scope(messages, self.c['repo'], self.card['number'], self.c['chat_merge_authority']['host'])
         history_paths = run([*history, '--name-only', '-z', self.base + '..' + self.head], self.wt).stdout.split('\0')
