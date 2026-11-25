@@ -63,7 +63,8 @@ instructions permit it. Keep explicit local choices and human merge gates.
 New setup defaults to `auto`; when the user authorizes automatic delivery,
 onboard with `--allow-merge` to retain `chat_merge_authority` for the selected
 repository and base. Validate that scope against the current configuration
-and requested work before using it. Preserve existing configurations.
+and requested work before using it, including its host, repository node ID
+and selected provider against live GitHub identity. Preserve existing configurations.
 Explain a missing authorization once with the concrete PR ready for review.
 
 Finish the required checks and independent review on the exact candidate.
@@ -74,10 +75,19 @@ limit, sensitive-path policy and repository protections. Evaluate
 issue and PR, including `human-only`, security and configured label gates.
 Any policy reason requires its documented handoff. A draft, failed or
 missing required check, unresolved finding or uncertain write remains pending.
-Use a supported repository merge provider that enforces both the reviewed
-head and base through the actual write. An expected-head-only queued merge
-cannot establish that binding. Keep Review and report a human handoff when
-the available provider cannot protect both inputs.
+Use `track merge --task ID --worktree PATH --head SHA --base SHA --prepare`
+for the configured chat atomic provider. It runs the configured checks and
+an independent native Codex review with parsed completion and acceptance
+coverage, within a finite, persisted preparation allowance. Only qualified
+evidence permits marking the PR ready and recording Review. Then use the same
+pins with `--apply`: fresh final checks, original proof validation and policy
+guards precede one atomic compare of both refs. Sync after GitHub confirms
+the merge. Preserve uncertain intents; subsequent apply only reads them back.
+An expected-head-only queued merge cannot establish the required binding.
+Setup and doctor report availability separately from saved consent. The chat
+provider supports same-repository closing PRs on refs without active protection
+or rules; it never bypasses those rules or custom review-policy obligations.
+Other configurations retain a concrete maintainer/human handoff.
 The legacy local-verification `run` entry point is unavailable in chat mode.
 Existing projects with that mode need an authorized maintainer merge or a
 human handoff followed by tracking sync. Preserve the saved mode and receipts;

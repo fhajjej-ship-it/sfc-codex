@@ -383,11 +383,14 @@ def sync(gh, root, task):
         pr_url = record.get('pr_url')
         target = pr_target(gh.c['repo'], number, pr_url)
         latest = record['events'][-1]
+        completed = latest['stage'] == 'Done' and latest.get('synced')
+        if completed and target is None and record.get('native_pr_attachment'):
+            target = pr_target(gh.c['repo'], None, record['native_pr_attachment']['binding']['url'])
         follow_pr = target is not None and latest['stage'] != 'Done'
         pending = any(not event.get('synced') for event in record['events'])
         attachment_pending = bool(record.get('native_pr_attachment_error') or
                                   record.get('native_pr_attachment'))
-        closing_pr_url = latest.get('closing_pr_url') if pending or attachment_pending else None
+        closing_pr_url = latest.get('closing_pr_url') if pending else None
         follow_closure = (target is None and record.get('delivery') != 'local-only'
                           and (latest['stage'] in ('QA', 'Review') or closing_pr_url is not None))
         if not (follow_pr or follow_closure or pending or attachment_pending):
@@ -396,7 +399,7 @@ def sync(gh, root, task):
             if not record.get('issue'):
                 bind_issue(gh, root, path, record)
             pull = None
-            if pr_url is not None:
+            if pr_url is not None or (target is not None and number is None):
                 repository, pull_number = target
                 pull = observe_pr(gh.chat_pr(pull_number, repository=repository), pull_number,
                                   record['scope']['base_branch'], repository)

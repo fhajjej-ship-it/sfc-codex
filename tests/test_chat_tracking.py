@@ -441,6 +441,22 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.gh.comments, notes)
         self.assertEqual(self.gh.writes.count((1, 'Done')), 1)
 
+    def test_inferred_completed_pr_unlink_is_only_an_attachment_warning(self):
+        self.start()
+        self.update('reviewed', 'Review')
+        self.sync()
+        pr = self.set_cross_repo_closure()
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+        self.gh.pull = pr
+        self.gh.closing_links = {'totalCount': 0, 'nodes': []}
+        self.gh.closer = None
+        notes, writes = self.gh.comments.copy(), self.gh.writes.copy()
+        result = self.sync()
+        self.assertEqual((result['state'], result['board_stage'], result['pending']), ('synced', 'Done', []))
+        self.assertEqual(result['native_pr_attachment']['state'], 'pending')
+        self.assertEqual((self.gh.comments, self.gh.writes), (notes, writes))
+        self.assertEqual(self.gh.native_writes, [])
+
     def test_unverified_closures_preserve_review(self):
         self.start()
         self.update('reviewed', 'Review')
@@ -643,7 +659,8 @@ class ChatTrackingTests(unittest.TestCase):
     def test_onboarding_sets_up_tracking_with_no_worker_grants_or_codex_cli(self):
         (self.root / '.sfc/config.json').unlink()
         github = Mock()
-        github.onboarding_identity.return_value = {'project_id': 'project'}
+        github.onboarding_identity.return_value = {'project_id': 'project', 'host': 'github.com',
+                                                      'repository_id': 'repo-id', 'repository': 'example/app'}
         github.metadata.return_value = {'id': 'project'}
         github.configure_dashboard.return_value = {'ready': True}
         github.dashboard.return_value = {'ready': True}
@@ -670,6 +687,12 @@ class ChatTrackingTests(unittest.TestCase):
                 self.assertEqual(sfc.main([*arguments, 'onboard-finish']), 0)
             self.assertEqual(json.loads(output.getvalue())['mode'], 'chat')
             self.assertFalse((checkout / '.sfc/config.json').exists())
+            github.priority_setup.return_value = {'ready': True}
+            github.type_setup.return_value = {'ready': True}
+            for command in ('dashboard', 'priority-setup', 'type-setup'):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(sfc.main([*arguments, command]), 0)
+                self.assertEqual(sfc.GitHub.call_args.args[0], self.root.resolve())
             legacy.assert_not_called()
         self.assertEqual(load_config(self.root)['workflow_mode'], 'chat')
         self.assertFalse(autostart.paths(self.root)[1].exists())
@@ -678,7 +701,8 @@ class ChatTrackingTests(unittest.TestCase):
     def test_chat_onboarding_retains_only_explicit_merge_scope_and_human_choice(self):
         (self.root / '.sfc/config.json').unlink()
         github = Mock()
-        github.onboarding_identity.return_value = {'project_id': 'project'}
+        github.onboarding_identity.return_value = {'project_id': 'project', 'host': 'github.com',
+                                                      'repository_id': 'repo-id', 'repository': 'example/app'}
         github.metadata.return_value = {'id': 'project'}
         github.configure_dashboard.return_value = {'ready': True}
         command = ['--root', str(self.root), 'onboard', '--repo', 'example/app',
@@ -701,11 +725,18 @@ class ChatTrackingTests(unittest.TestCase):
                 self.assertEqual(sfc.main([*command, '--allow-merge', '--expected-review',
                                            preview['setup_review']['review_digest']]), 1)
             self.assertFalse((self.root / '.sfc/config.json').exists())
+            github.onboarding_identity.return_value['repository_id'] = 'replacement'
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(sfc.main([*command, '--allow-merge', '--expected-review',
+                                           automatic['setup_review']['review_digest']]), 1)
+            self.assertFalse((self.root / '.sfc/config.json').exists())
+            github.onboarding_identity.return_value['repository_id'] = 'repo-id'
             with redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(sfc.main([*command, '--allow-merge', '--expected-review',
                                            automatic['setup_review']['review_digest']]), 0)
             applied = json.loads(output.getvalue())
-        expected = {'repo': 'example/app', 'base_branch': 'main', 'scope': 'user-requested-tasks'}
+        expected = {'repo': 'example/app', 'base_branch': 'main', 'scope': 'user-requested-tasks',
+                    'provider': 'atomic-fast-forward', 'host': 'github.com', 'repository_id': 'repo-id'}
         self.assertEqual(applied['chat_merge_authority'], expected)
         self.assertEqual(load_config(self.root)['chat_merge_authority'], expected)
 

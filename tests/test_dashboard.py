@@ -91,6 +91,17 @@ class DashboardGitHub(GitHub):
 
 
 class DashboardTests(unittest.TestCase):
+    def test_chat_readiness_requires_visible_native_pr_field_and_reports_manual_action(self):
+        gh = DashboardGitHub(styled=True, views=[view()])
+        gh.data['project']['fields']['nodes'].append(
+            {'id': 'linked-prs', 'name': 'Linked pull requests', 'dataType': 'LINKED_PULL_REQUESTS'})
+        hidden = gh.dashboard(linked_prs=True)
+        self.assertFalse(hidden['ready'])
+        self.assertIn('Linked pull requests', ' '.join(hidden['pending']))
+        gh.data['project']['views']['nodes'][0]['configuration']['visibleFields']['nodes'].append({'id': 'linked-prs'})
+        self.assertTrue(gh.dashboard(linked_prs=True)['ready'])
+        self.assertEqual(gh.mutations, [])
+
     def test_defaults_apply_colors_and_emojis_without_recreating_options(self):
         gh = DashboardGitHub()
         before = [(o["id"], o["name"]) for o in gh.data["field"]["options"]]

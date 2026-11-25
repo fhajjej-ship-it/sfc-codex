@@ -331,17 +331,17 @@ class GitHub:
         from .work_types import setup
         return setup(self, apply=apply)
 
-    def dashboard(self):
+    def dashboard(self, *, linked_prs=False):
         data = self.dashboard_data()
         report = assess_dashboard(data["field"], self.factory_view(data), data["project"]["url"],
-                                  data["project"]["fields"]["nodes"])
+                                  data["project"]["fields"]["nodes"], linked_prs=linked_prs)
         report["priority"] = self.priority_setup()
         report["ready"] = report["ready"] and report["priority"]["ready"]
         report["work_types"] = self.type_setup()
         report["ready"] = report["ready"] and report["work_types"]["ready"]
         return report
 
-    def configure_dashboard(self):
+    def configure_dashboard(self, *, linked_prs=False):
         """Explicit onboarding/repair writes only; repeated matching setup is read-only."""
         self.priority_setup()  # Refuse ambiguous conventions before presentation writes.
         self.type_setup()  # Discover labels/views and reject conflicts before writes.
@@ -400,7 +400,7 @@ class GitHub:
         # GitHub's current public mutation exposes no column-by update. Read the
         # saved grouping and leave an explicit pending UI step until it matches.
         report = assess_dashboard(final["field"], saved, final["project"]["url"],
-                                  final["project"]["fields"]["nodes"])
+                                  final["project"]["fields"]["nodes"], linked_prs=linked_prs)
         report["priority"] = self.priority_setup(apply=True)
         report["ready"] = report["ready"] and report["priority"]["ready"]
         report["work_types"] = self.type_setup(apply=True)

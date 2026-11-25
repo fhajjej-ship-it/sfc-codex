@@ -21,8 +21,13 @@ New setup defaults to automatic merge policy. Explain the repository, base,
 required checks and change-size limit during setup. When the user authorizes
 automatic delivery for their requested tasks, preview with `--allow-merge`
 and apply that exact `--expected-review` digest; setup
-retains that exact repository/base scope as `chat_merge_authority`. Offer
-`--merge-policy human` for an explicit merge gate. Existing project settings
+retains that exact repository/base scope as `chat_merge_authority`.
+The grant also retains the reviewed host, repository node ID and provider;
+renaming or replacing a repository cannot transfer it. New setup selects the
+chat atomic provider and explicitly reports its availability. Protected/ruled
+refs and custom review policies require their existing maintainer process;
+saving automatic policy or a grant does not claim that provider is available.
+Offer `--merge-policy human` for an explicit merge gate. Existing project settings
 retain their saved policy and authority. An automatic policy preference alone
 still needs the user's merge authority.
 
@@ -92,6 +97,20 @@ receive a concrete maintainer or human merge handoff; their settings are
 preserved. A queued merge remains in Review until GitHub confirms it merged. Human merge
 policies and explicit local delivery choices still apply. See the SFC skill's
 delivery steps for the required verification and merge methods.
+
+`track merge --task ID --worktree PATH --head SHA --base SHA --prepare`
+owns actual configured checks and one independent native Codex review. It
+requires parsed native completion, exact scope and complete acceptance coverage.
+Each preparation is reserved durably before execution, bounded by `max_attempts`.
+The same pins with `--apply` require Review, validate original hashes, execute
+fresh final checks, enforce issue/size/sensitive policy and compare both refs
+atomically. A final-check reservation is spent even on interruption. Unknown
+merge outcomes keep the intent and permit only readback, never a second write.
+Existing configurations and custom review requirements are not migrated.
+This provider requires same-repository closing PRs, reviewed identity-bound
+consent and refs without active protection/rules; unavailable capabilities are
+explicit in onboarding and doctor, with a maintainer handoff. It changes no
+repository protections and starts no builder or queue watcher.
 
 ```sh
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track update \

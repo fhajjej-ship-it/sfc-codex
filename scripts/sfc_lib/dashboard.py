@@ -50,7 +50,7 @@ def styled_options(options):
     return result
 
 
-def assess_dashboard(field, view, project_url, fields):
+def assess_dashboard(field, view, project_url, fields, *, linked_prs=False):
     options = {option["name"]: option for option in field["options"]}
     style_ready = all(name in options and
                       (options[name]["color"], options[name]["description"]) == STAGE_STYLE[name]
@@ -69,6 +69,12 @@ def assess_dashboard(field, view, project_url, fields):
     }
     url = f"{project_url}/views/{view['number']}" if view else project_url
     pending = []
+    if linked_prs:
+        ids = {f['id'] for f in fields if f.get('dataType') == 'LINKED_PULL_REQUESTS'}
+        visible = {f['id'] for f in view['configuration']['visibleFields']['nodes']} if view else set()
+        checks['linked_pull_requests'] = len(ids) == 1 and ids <= visible
+        if not checks['linked_pull_requests']:
+            pending.append(f'Open {url}, enable Fields > Linked pull requests, and Save view.')
     if not checks["activity_fields"] or not checks["saved_activity_fields"]:
         pending.append("Run dashboard --apply to add SFC Agent and SFC Activity text fields to the saved Factory cards.")
     if not checks["stage_style"] or not checks["factory_view"]:

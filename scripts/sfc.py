@@ -181,6 +181,7 @@ def onboard_chat(root, args):
         raise Halt("Set --base explicitly; remote default branch is unavailable")
     config = validate_config({
         "version": 1, "workflow_mode": "chat", "repo": repo, "base_branch": branch,
+        "chat_merge_provider": "atomic-fast-forward",
         "project": {"owner": args.owner, "number": args.project}, "status_field": args.status_field,
         "verify_commands": args.verify or [], "activity_timezone": args.activity_timezone,
         "merge_policy": merge_policy, "merge_mode": "github-protected", "allow_no_checks": False,
@@ -189,13 +190,17 @@ def onboard_chat(root, args):
     })
     if args.allow_merge:
         config['chat_merge_authority'] = {'repo': repo, 'base_branch': branch,
-                                         'scope': 'user-requested-tasks'}
+                                         'scope': 'user-requested-tasks', 'provider': config['chat_merge_provider']}
     gh = GitHub(root, config)
     identity = gh.onboarding_identity()
+    if args.allow_merge:
+        config['chat_merge_authority'].update({key: identity[key] for key in ('host', 'repository_id')})
+    from sfc_lib.chat_merge import support
+    merge_support = support(gh, config)
     digest = autostart.digest([config, identity])
     if args.preview:
         return {"mode": "chat", "proposed_config": config, "project_id": identity["project_id"],
-                "setup_review": {"review_digest": digest}}
+                "setup_review": {"review_digest": digest}, "automatic_merge": merge_support}
     if args.expected_review is not None and args.expected_review != digest:
         raise Halt('Setup review changed; preview the Project again before applying')
     autostart.verify_onboarding_identity(gh, identity)
@@ -205,16 +210,19 @@ def onboard_chat(root, args):
     return {"mode": "chat", "config": str(root / ".sfc/config.json"), "project_id": metadata["id"],
             "merge_policy": config['merge_policy'],
             "chat_merge_authority": config.get('chat_merge_authority'),
-            "dashboard": gh.configure_dashboard()}
+            "automatic_merge": merge_support,
+            "dashboard": gh.configure_dashboard(linked_prs=True)}
 
 
 def doctor_chat(root):
     config = load_config(root)
     gh = GitHub(root, config)
     gh.verify_repository()
-    dashboard = gh.dashboard()
+    dashboard = gh.dashboard(linked_prs=True)
+    from sfc_lib.chat_merge import support
     return {"mode": "chat", "ready": True, "onboarding_complete": dashboard["ready"],
             "dashboard": dashboard, "worker_timeout": config["worker_timeout"],
+            "automatic_merge": support(gh, config),
             "verify_commands": config["verify_commands"],
             "verify_command_count": len(config["verify_commands"]),
             "verify_timeout": config["verify_timeout"],
@@ -355,6 +363,14 @@ def main(argv=None):
     select_task.add_argument('--task')
     select_task.add_argument('--prefix')
     tracking.add_parser('sync', help='sync one task and read back the board state').add_argument('--task', required=True)
+    delivery = tracking.add_parser('merge', help='supervisor: prepare reviewed chat delivery or apply its pinned atomic merge')
+    delivery.add_argument('--task', required=True)
+    delivery.add_argument('--worktree', required=True, type=Path)
+    delivery.add_argument('--head', required=True)
+    delivery.add_argument('--base', required=True)
+    choice = delivery.add_mutually_exclusive_group(required=True)
+    choice.add_argument('--prepare', action='store_true', help='spend one finite preparation on actual checks and native review')
+    choice.add_argument('--apply', action='store_true', help='consume qualified evidence and existing merge authority')
     release = sub.add_parser("release-request", help="create a frozen versioned release card; no publication")
     release.add_argument("--version", help="explicit version; otherwise configured plain-text version_file")
     release.add_argument("--recover-creation", action="store_true",
@@ -423,7 +439,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         root = repo_root(args.root)
-        if args.command in ('doctor', 'onboard-finish'):
+        if args.command in ('doctor', 'onboard-finish', 'dashboard', 'priority-setup', 'type-setup'):
             root = chat_tracking.project_root(root)
         if (((args.command in ('run', 'watch') and not args.dry_run) or
              (args.command == 'autostart' and args.enable) or
@@ -472,9 +488,9 @@ def main(argv=None):
             if args.apply:
                 with exclusive(root), creation_lock(root):
                     gh.verify_repository()
-                    result = gh.configure_dashboard()
+                    result = gh.configure_dashboard(linked_prs=chat_tracking.chat_mode(root))
             else:
-                result = gh.dashboard()
+                result = gh.dashboard(linked_prs=chat_tracking.chat_mode(root))
         elif args.command in ("priority-setup", "type-setup"):
             gh = GitHub(root, load_config(root))
             prepare = gh.priority_setup if args.command == "priority-setup" else gh.type_setup
@@ -536,6 +552,10 @@ def main(argv=None):
                                               local_done=args.local_done, closes_issue=args.closes_issue)
             elif args.action == 'status':
                 result = chat_tracking.status(root, config, task=args.task, prefix=args.prefix)
+            elif args.action == 'merge':
+                from sfc_lib.chat_merge import delivery
+                result = delivery(GitHub(root, config), root, args.task, args.worktree,
+                                  args.head, args.base, apply=args.apply)
             else:
                 result = chat_tracking.sync(GitHub(root, config), root, args.task)
         elif args.command == "watch-status":
