@@ -197,6 +197,9 @@ def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None
         if record['events'][-1]['stage'] == 'Done':
             raise Halt('This chat task is complete')
         bound = pr_target(config['repo'], record.get('pr'), record.get('pr_url'))
+        archived = {pr_target(config['repo'], row.get('pr'), row.get('pr_url')) for row in record.get('milestone_prs', [])}
+        if target and target in archived and not milestone_only:
+            raise Halt('An archived milestone PR cannot become delivery; record a distinct delivery PR')
         if target and bound and target != bound:
             observed = record.get('pull_request', {})
             if (record.get('pr_role') != 'milestone' or observed.get('state') not in ('MERGED', 'CLOSED') or

@@ -706,6 +706,18 @@ class LocalMergeAdapterTests(unittest.TestCase):
             with patch.object(gh, "graphql", return_value=response), self.assertRaises(Halt):
                 gh.atomic_fast_forward(intent)
 
+    def test_named_check_inventory_retains_original_ids_and_contexts(self):
+        gh = self.adapter(); sha = 'a' * 40
+        checks = [{'total_count': 1, 'check_runs': [{'id': 101, 'node_id': 'run-node', 'name': 'unit',
+                   'head_sha': sha, 'status': 'completed', 'conclusion': 'success'}]}]
+        statuses = [{'total_count': 1, 'sha': sha, 'statuses': [{'id': 202, 'node_id': 'status-node',
+                      'context': 'lint', 'state': 'success'}]}]
+        with patch.object(gh, 'call', side_effect=[checks, statuses]):
+            result = gh.local_merge_checks(sha, identities=True)
+        self.assertEqual([(row['id'], row.get('name', row.get('context'))) for row in result],
+                         [('run-node', 'unit'), ('status-node', 'lint')])
+        self.assertEqual([row['databaseId'] for row in result], [101, 202])
+
     def test_schema_capabilities_fail_closed(self):
         gh = self.adapter()
         schema = {"mutation": {"fields": [{"name": "updateRefs", "args": [{"name": "input"}]}]},

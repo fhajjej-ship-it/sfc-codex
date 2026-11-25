@@ -131,14 +131,20 @@ class Delivery:
         self.card = tracking.verified_card(self.gh, self.record)
         if not completion and (self.card['state'] != 'OPEN' or self.card['status'] not in ('QA', 'Review')):
             raise Halt('Chat delivery requires the open tracked issue in QA or Review')
+        if (git(self.wt, 'rev-parse', '--is-shallow-repository') != 'false' or
+                git(self.wt, 'for-each-ref', '--format=%(refname)', 'refs/replace') or
+                (common_dir(self.wt) / 'info/grafts').exists() or
+                any(os.environ.get(key) for key in ('GIT_REPLACE_REF_BASE', 'GIT_GRAFT_FILE'))):
+            raise Halt('Automatic delivery requires complete unmodified Git history; maintainer handoff required')
         self.local.clean(self.wt, self.head)
         if (self.head == self.base or run(['git', 'merge-base', '--is-ancestor', self.base, self.head],
                                         self.wt, check=False).returncode):
             raise Halt('Integrate the current base before checking and reviewing this candidate')
 
-    def snapshot(self, intent):
+    def snapshot(self, intent, *, check_ids=()):
         snapshot = self.gh.chat_delivery_snapshot(intent['pr'], self.card['number'], intent['base_ref'], intent['head_ref'],
-                                                  self.card['item_id'], self.card['_pickup_scope']['project']['field'])
+                                                  self.card['item_id'], self.card['_pickup_scope']['project']['field'],
+                                                  check_ids=check_ids)
         pr, issue = self.local.identity(self.card, intent, snapshot)
         if snapshot['id'] != self.c['chat_merge_authority']['repository_id']:
             raise Halt('Reviewed repository identity changed')
@@ -172,10 +178,10 @@ class Delivery:
                 values['values'].get(meta['field']) != options[self.card['status']]):
             raise Halt('Live issue policy or routing changed during candidate validation')
 
-    def candidate(self, *, ready=False, ci=None):
+    def candidate(self, *, ready=False, ci=False):
         self.guard()
         _, number = tracking.pr_target(self.c['repo'], self.record.get('pr'), self.record.get('pr_url'))
-        pr = self.gh.pr(number)
+        pr = self.gh.delivery_pr(number)
         paths = [p for p in git(self.wt, 'diff', '--no-color', '--no-renames', '--name-only', '-z', self.base, self.head).split('\0') if p]
         lines = 0
         for row in git(self.wt, 'diff', '--no-color', '--no-renames', '--numstat', '-z', self.base, self.head).split('\0'):
@@ -184,8 +190,8 @@ class Delivery:
                 if '-' in (a, d):
                     raise Halt('Binary changes require a maintainer handoff')
                 lines += int(a) + int(d)
-        history = ['git', 'log', '--no-color', '--format=', '--no-renames', '--diff-merges=separate']
-        messages = run(['git', 'log', '--no-color', '--format=%B%x00', self.base + '..' + self.head], self.wt).stdout
+        history = ['git', '--no-replace-objects', 'log', '--no-color', '--format=', '--no-renames', '--diff-merges=separate']
+        messages = run(['git', '--no-replace-objects', 'log', '--no-color', '--format=%B%x00', self.base + '..' + self.head], self.wt).stdout
         commit_closure_scope(messages, self.c['repo'], self.card['number'], self.c['chat_merge_authority']['host'])
         history_paths = run([*history, '--name-only', '-z', self.base + '..' + self.head], self.wt).stdout.split('\0')
         history_stats = run([*history, '--numstat', '-z', self.base + '..' + self.head], self.wt).stdout
@@ -210,11 +216,20 @@ class Delivery:
                       self.record.get('native_pr_attachment', {}).get('state') != 'verified' or
                       self.record.get('native_pr_attachment_error')):
             raise Halt('Sync pending milestones and native attachment readback before merging')
-        if ci is not None:
-            if self.ci_candidate(snapshot, intent) != {k: ci[k] for k in ('head', 'base', 'merge')}:
+        if ci:
+            expected = self.ci_candidate(snapshot, intent)
+            inventories = {'head': self.gh.local_merge_checks(self.head, identities=True),
+                           'merge': self.gh.local_merge_checks(expected['merge'], identities=True)}
+            ids = [row['id'] for rows in inventories.values() for row in rows]
+            if len(ids) > 100 or len(set(ids)) != len(ids):
+                raise Halt('Complete final check identity scope unavailable; maintainer handoff required')
+            snapshot, live, issue = self.snapshot(intent, check_ids=ids)
+            if live['state'] != 'OPEN' or live['isDraft'] is not False:
+                raise Halt('A ready PR is required; it was closed or returned to draft')
+            if self.ci_candidate(snapshot, intent) != expected:
                 raise Halt('The applicable PR check candidate changed before dispatch')
-            if ci['checks_source'] == self.head and (pr['headRefOid'] != self.head or not checks_pass(pr, self.c['allow_no_checks'])):
-                raise Halt('Newer applicable head checks are missing, pending or failed')
+            intent['ci'] = self.ci_receipt(snapshot, intent, inventories)
+        intent['open_pr_heads'] = self.check_indirect_merges(snapshot, intent)
         intent.update(repository_id=snapshot['id'], pr_id=live['id'],
                       head_id=snapshot['head']['id'], base_id=snapshot['base']['id'])
         self.intent = intent
@@ -245,24 +260,67 @@ class Delivery:
             raise Halt('PR test-merge checks do not belong to the exact reviewed head/base/tree')
         return {'head': self.head, 'base': self.base, 'merge': merge['oid']}
 
-    def check_ci(self):
-        snapshot, _, _ = self.snapshot(self.intent)
-        candidate = self.ci_candidate(snapshot, self.intent)
-        source = candidate['merge']
-        checks = self.gh.local_merge_checks(source)
-        if not isinstance(checks, list):
-            raise Halt('The complete test-merge check inventory is missing')
-        if not checks:  # GitHub uses head checks only when the test merge has none.
-            source = self.head
-            checks = self.gh.local_merge_checks(source)
-        if not isinstance(checks, list):
-            raise Halt('The complete head check inventory is missing')
-        after, _, _ = self.snapshot(self.intent)
-        if self.ci_candidate(after, self.intent) != candidate:
-            raise Halt('PR check scope changed during inventory')
+    def check_indirect_merges(self, snapshot, intent):
+        inventory = snapshot['openDeliveryPRs']
+        rows = inventory['nodes']
+        if inventory['pageInfo']['hasNextPage'] or len({row['id'] for row in rows}) != len(rows):
+            raise Halt('Complete open-PR head inventory is unavailable; maintainer handoff required')
+        selected = [row for row in rows if row['id'] == snapshot['pullRequest']['id']]
+        if (len(selected) != 1 or selected[0]['headRefOid'] != self.head or
+                any(not row['id'] or type(row['number']) is not int or row['number'] <= 0 or
+                    row['baseRefName'] != self.c['base_branch'] or
+                    not re.fullmatch('[0-9a-f]{40}', row['headRefOid'] or '') for row in rows)):
+            raise Halt('Open-PR head inventory changed or is incomplete')
+        newly_reachable = set(git(self.wt, '--no-replace-objects', 'rev-list', self.base + '..' + self.head).splitlines())
+        if any(row['id'] != selected[0]['id'] and row['headRefOid'] in newly_reachable for row in rows):
+            raise Halt('Candidate would indirectly merge another open PR; maintainer handoff required')
+        return rows
+
+    def ci_receipt(self, snapshot, intent, inventories):
+        candidate = self.ci_candidate(snapshot, intent)
+        def inventory(commit):
+            rollup = commit['statusCheckRollup']
+            if rollup is None:
+                return []
+            connection = rollup['contexts']
+            rows = connection['nodes']
+            if connection['pageInfo']['hasNextPage'] or len({row['id'] for row in rows}) != len(rows):
+                raise Halt('Complete final check inventory unavailable; maintainer handoff required')
+            for row in rows:
+                label = 'name' if row['__typename'] == 'CheckRun' else 'context'
+                if row['__typename'] not in ('CheckRun', 'StatusContext') or not row['id'] or not row[label]:
+                    raise Halt('Final check identities are incomplete')
+            if rollup['state'] != 'SUCCESS' or rows and not checks_pass({'statusCheckRollup': rows}, False):
+                raise Halt('Required GitHub checks are missing, pending or failed')
+            return rows
+        merge = snapshot['pullRequest']['potentialMergeCommit']
+        # REST inventories include commit checks omitted by the PR rollup.
+        source, raw = (candidate['merge'], inventories['merge']) if inventories['merge'] else (self.head, inventories['head'])
+        commit = merge if inventories['merge'] else snapshot['head']['target']
+        if not inventories['merge'] and merge['statusCheckRollup'] is not None:
+            extra = inventory(merge)
+            if extra:
+                raise Halt('CI inventory changed before dispatch; wait for a stable complete read')
+        if not checks_pass({'statusCheckRollup': raw}, self.c['allow_no_checks']):
+            raise Halt('Required GitHub checks are missing, pending or failed')
+        nodes = snapshot['known_checks']
+        current = {row['id']: row for row in nodes if row is not None}
+        if len(current) != len([row for row in nodes if row is not None]):
+            raise Halt('Known check identity readback is ambiguous')
+        checks = []
+        for observed in raw:
+            row = current.get(observed['id'])
+            if (row is None or row['__typename'] != observed['__typename'] or
+                    not row.get('name', row.get('context'))):
+                raise Halt('A known check disappeared or changed identity before dispatch')
+            checks.append(row)
+        latest = inventory(commit)
+        if any(row['id'] not in {item['id'] for item in raw} for row in latest):
+            raise Halt('CI inventory changed before dispatch; wait for a stable complete read')
         if not checks_pass({'statusCheckRollup': checks}, self.c['allow_no_checks']):
             raise Halt('Required GitHub checks are missing, pending or failed')
-        return {**candidate, 'checks_source': source, 'checks': checks}
+        return {**candidate, 'checks_source': source, 'checks': checks, 'observed_at': now(),
+                'inventory_reads': inventories, 'final_rollup': commit['statusCheckRollup']}
 
     def prepare(self):
         previous = self.record.get('chat_merge')
@@ -305,7 +363,7 @@ class Delivery:
         if current_provider != provider:
             raise Halt('Native review provider changed while running project checks')
         scope = {**proof['binding'], 'checks': digest(proof['checks'])}
-        prompt = ('Independently review the exact diff with git diff --no-ext-diff --no-textconv ' + self.base + ' ' + self.head +
+        prompt = ('Independently review the exact diff with git --no-replace-objects diff --no-color --no-ext-diff --no-textconv ' + self.base + ' ' + self.head +
                   '. Read applicable repository instructions. Do not implement or write to GitHub. '
                   'Inspect these completed project checks; do not repeat them: ' + json.dumps(proof['checks']) +
                   '\nAcceptance criteria: ' + json.dumps(criteria) + '\nExact scope: ' + json.dumps(scope) +
@@ -381,7 +439,7 @@ class Delivery:
                       else 'Readback only; merge writes are never repeated')
             return {'state': state, 'detail': detail}
         self.gh.local_merge_capabilities()
-        intent, pr = self.candidate(ready=True)
+        intent, pr = self.candidate(ready=True, ci=True)
         if self.record['events'][-1]['stage'] != 'Review' or pr['isDraft']:
             raise Halt('A ready PR and recorded Review milestone are required')
         proof = (self.record.get('delivery_attempts') or [{}])[-1]
@@ -393,10 +451,9 @@ class Delivery:
         _, provider = review_policy.native_command(SimpleNamespace(c=self.c), self.wt, Path(proof['native_message']))
         if provider != proof['provider']:
             raise Halt('Native review provider changed after preparation')
-        self.check_ci()
         if proof.get('apply_reserved'):
             raise Halt('This final verification attempt is already spent; preserve it and prepare within the remaining allowance')
-        proof.update(apply_reserved=now(), final_checks=[])
+        proof.update(apply_reserved=now(), admission_ci=intent['ci'], final_checks=[])
         scratch = Path(proof['log']).parent / ('candidate-' + uuid.uuid4().hex[:8])
         proof['final_worktree'] = str(scratch)
         write_json(self.path, self.record)
@@ -419,12 +476,11 @@ class Delivery:
             raise Halt('Final checks changed the pinned candidate')
         self.validate_receipts(proof, final=True)
         self.gh.local_merge_capabilities()
-        ci = self.check_ci()
-        intent, _ = self.candidate(ready=True, ci=ci)  # Last remote read validates live PR, issue and refs.
+        intent, _ = self.candidate(ready=True, ci=True)  # Last remote read validates live PR, issue and refs.
         if proof['binding'] != self.binding() or not self.fresh(proof):
             raise Halt('Final verification inputs changed; repeat qualified preparation')
         intent.update(state='dispatching', dispatch_at=now(), time=now(), binding=proof['binding'],
-                      preparation_id=proof['intent']['id'], ci=ci, closing_issues=[self.card['id']])
+                      preparation_id=proof['intent']['id'], closing_issues=[self.card['id']])
         self.record['chat_merge'] = intent
         write_json(self.path, self.record)  # Durable proof that the final gates actually passed.
         try:

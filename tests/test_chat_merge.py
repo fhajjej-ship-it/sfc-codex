@@ -25,6 +25,8 @@ class ChatGitHub(AtomicGitHub):
         self.merge_parents = [base, head]
         self.merge_oid = git(self.root, 'commit-tree', self.merge_tree, '-p', base, '-p', head, '-m', 'Test merge')
         self.merge_ci = []
+        self.other_prs = []
+        self.excluded_ci = {'head': [], 'merge': []}
 
     def local_merge_snapshot(self, *args):
         snapshot = super().local_merge_snapshot(*args)
@@ -34,7 +36,25 @@ class ChatGitHub(AtomicGitHub):
             'parents': {'totalCount': 2, 'nodes': [{'oid': oid} for oid in self.merge_parents]}}
         return snapshot
 
-    def chat_delivery_snapshot(self, number, issue, base, head, item_id, field_id):
+    def delivery_pr(self, number):
+        result = self.pr(number)
+        result.pop('statusCheckRollup', None)
+        return result
+
+    @staticmethod
+    def rollup(rows, sha):
+        if not rows:
+            return None
+        nodes = []
+        for index, row in enumerate(rows):
+            kind = 'StatusContext' if 'state' in row else 'CheckRun'
+            node = {'__typename': kind, 'id': row.get('id', sha + '-' + str(index)), **copy.deepcopy(row)}
+            node['context' if kind == 'StatusContext' else 'name'] = row.get('context' if kind == 'StatusContext' else 'name', 'check-' + str(index))
+            nodes.append(node)
+        state = 'SUCCESS' if chat_merge.checks_pass({'statusCheckRollup': nodes}, False) else 'FAILURE'
+        return {'state': state, 'contexts': {'nodes': nodes, 'pageInfo': {'hasNextPage': False, 'endCursor': None}}}
+
+    def chat_delivery_snapshot(self, number, issue, base, head, item_id, field_id, *, check_ids=()):
         snapshot = self.local_merge_snapshot(number, issue, base, head)
         card = next(value for value in self.items if value['number'] == issue)
         meta = self.metadata()
@@ -48,10 +68,27 @@ class ChatGitHub(AtomicGitHub):
                                                      'pageInfo': {'hasNextPage': False, 'endCursor': None}}}
         snapshot['routing_field'] = {'id': meta['field'], 'name': self.c['status_field'],
                                      'options': [{'name': name, 'id': value} for name, value in meta['options'].items()]}
+        if snapshot['head'] is not None:
+            snapshot['head']['target']['statusCheckRollup'] = self.rollup(self.ci, snapshot['head']['target']['oid'])
+        snapshot['pullRequest']['potentialMergeCommit']['statusCheckRollup'] = self.rollup(self.merge_ci, self.merge_oid)
+        selected = snapshot['pullRequest']
+        snapshot['openDeliveryPRs'] = {'nodes': [{k: selected[k] for k in ('id', 'number', 'url', 'headRefOid', 'baseRefName')}] + copy.deepcopy(self.other_prs),
+                                     'pageInfo': {'hasNextPage': False, 'endCursor': None}}
+        all_nodes = {}
+        for key, sha, rows in (('head', snapshot['pullRequest']['headRefOid'], self.ci), ('merge', self.merge_oid, self.merge_ci)):
+            complete = self.rollup(rows + self.excluded_ci[key], sha)
+            for node in (complete['contexts']['nodes'] if complete else []):
+                all_nodes[node['id']] = node
+        snapshot['known_checks'] = [copy.deepcopy(all_nodes.get(identity)) for identity in check_ids]
         return snapshot
 
-    def local_merge_checks(self, head):
-        return copy.deepcopy(self.merge_ci) if head == self.merge_oid else super().local_merge_checks(head)
+    def local_merge_checks(self, head, *, identities=False):
+        key = 'merge' if head == self.merge_oid else 'head'
+        rows = (self.merge_ci if key == 'merge' else self.ci) + self.excluded_ci[key]
+        if identities:
+            result = self.rollup(rows, head)
+            return result['contexts']['nodes'] if result else []
+        return copy.deepcopy(rows)
 
     def onboarding_identity(self):
         return {'host': 'github.com', 'repository_id': self.repository_id,
@@ -152,15 +189,79 @@ class ChatMergeTests(unittest.TestCase):
             'url': 'https://github.com/example/app/pull/101'}}
         write_json(self.path, record)
 
+    def test_a_check_omitted_by_rollup_still_gates_on_its_final_identity_read(self):
+        self.gh.excluded_ci['head'] = [{'id': 'hidden-security', 'name': 'security', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]
+        self.reviewed()
+        original = self.gh.chat_delivery_snapshot
+        reads = 0
+        def fail(*args, **kwargs):
+            nonlocal reads
+            reads += 1
+            if reads == 4:
+                self.gh.excluded_ci['head'][0]['conclusion'] = 'FAILURE'
+            return original(*args, **kwargs)
+        with patch.object(self.gh, 'chat_delivery_snapshot', side_effect=fail), self.assertRaisesRegex(Halt, 'GitHub checks'):
+            self.call(apply=True)
+        self.assertEqual(self.gh.attempts, [])
+        self.assertNotIn('chat_merge', read_json(self.path))
+
+    def test_newer_failed_test_merge_check_in_final_response_prevents_dispatch(self):
+        self.reviewed(); self.gh.merge_ci = [{'id': 'merge-job', 'name': 'unit', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]
+        original = self.gh.chat_delivery_snapshot
+        reads = 0
+        def fail(*args, **kwargs):
+            nonlocal reads
+            reads += 1
+            if reads == 4:
+                self.gh.merge_ci[0]['conclusion'] = 'FAILURE'
+            return original(*args, **kwargs)
+        with patch.object(self.gh, 'chat_delivery_snapshot', side_effect=fail), self.assertRaisesRegex(Halt, 'GitHub checks'):
+            self.call(apply=True)
+        self.assertEqual(self.gh.attempts, [])
+        self.assertNotIn('chat_merge', read_json(self.path))
+
+    def test_final_ci_receipt_preserves_named_check_and_context_identities(self):
+        self.gh.ci = [{'id': 'unit-run', 'name': 'unit', 'status': 'COMPLETED', 'conclusion': 'SUCCESS'},
+                      {'id': 'lint-context', 'context': 'lint', 'state': 'SUCCESS'}]
+        self.reviewed(); self.call(apply=True)
+        receipt = read_json(self.path)['chat_merge']['ci']
+        self.assertEqual(receipt['checks_source'], self.head)
+        self.assertEqual([(row['id'], row.get('name', row.get('context'))) for row in receipt['checks']],
+                         [('unit-run', 'unit'), ('lint-context', 'lint')])
+
+    def test_other_newly_reachable_open_pr_heads_require_a_handoff(self):
+        self.gh.other_prs = [{'id': 'other-pr', 'number': 102, 'url': 'https://github.com/example/app/pull/102',
+                             'headRefOid': self.head, 'baseRefName': 'main'}]
+        with self.assertRaisesRegex(Halt, 'indirectly merge'):
+            self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+        self.gh.other_prs[0]['headRefOid'] = self.base  # Already reachable; not imported by this write.
+        self.assertEqual(self.call()['state'], 'qualified')
+
+    def test_shallow_or_replaced_history_is_not_an_authority_inventory(self):
+        shallow = common_dir(self.root) / 'shallow'; shallow.write_text(self.base + '\n')
+        try:
+            with self.assertRaisesRegex(Halt, 'complete unmodified Git history'):
+                self.call()
+        finally:
+            shallow.unlink()
+        replacement = git(self.root, 'commit-tree', self.base + '^{tree}', '-m', 'Replacement')
+        git(self.root, 'replace', self.base, replacement)
+        with self.assertRaisesRegex(Halt, 'complete unmodified Git history'):
+            self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+
     def test_newer_failing_applicable_head_rollup_prevents_dispatch(self):
         self.reviewed()
-        original = self.gh.pr
-        def newer(number):
-            pr = original(number)
-            if read_json(self.path)['delivery_attempts'][0].get('final_checks'):
-                pr['statusCheckRollup'] = [{'status': 'COMPLETED', 'conclusion': 'FAILURE'}]
-            return pr
-        with patch.object(self.gh, 'pr', side_effect=newer), self.assertRaisesRegex(Halt, 'Newer applicable head checks'):
+        original = self.gh.chat_delivery_snapshot
+        reads = 0
+        def newer(*args, **kwargs):
+            nonlocal reads
+            reads += 1
+            if reads == 4:
+                self.gh.ci = [{'status': 'COMPLETED', 'conclusion': 'FAILURE'}]
+            return original(*args, **kwargs)
+        with patch.object(self.gh, 'chat_delivery_snapshot', side_effect=newer), self.assertRaisesRegex(Halt, 'GitHub checks'):
             self.call(apply=True)
         self.assertEqual(self.gh.attempts, [])
         self.assertNotIn('chat_merge', read_json(self.path))
@@ -211,8 +312,8 @@ class ChatMergeTests(unittest.TestCase):
     def test_combined_snapshot_refuses_partial_labels_and_changed_field_meanings(self):
         original = self.gh.chat_delivery_snapshot
         for mode in ('partial-labels', 'changed-field'):
-            def change(*args):
-                snapshot = original(*args)
+            def change(*args, **kwargs):
+                snapshot = original(*args, **kwargs)
                 if mode == 'partial-labels':
                     snapshot['issue']['labels']['pageInfo']['hasNextPage'] = True
                 else:
@@ -330,7 +431,7 @@ class ChatMergeTests(unittest.TestCase):
         def edit(snapshot):
             nonlocal reads
             reads += 1
-            if reads == 6:
+            if reads == 4:
                 self.gh.items[0]['labels'].append('human-only')
         self.gh.edit_snapshot = edit
         with self.assertRaisesRegex(Halt, 'issue policy'):
@@ -479,8 +580,9 @@ class ChatMergeTests(unittest.TestCase):
         def edit(snapshot):
             nonlocal reads
             reads += 1
-            if reads == 5:  # CI's final read returns; then the server changes the PR.
+            if reads == 4:  # The final paired response observes the PR returning to draft.
                 self.gh.prs[101]['isDraft'] = True
+                snapshot['pullRequest']['isDraft'] = True
         self.gh.edit_snapshot = edit
         with self.assertRaisesRegex(Halt, 'ready PR'):
             self.call(apply=True)
@@ -566,36 +668,34 @@ class ChatMergeTests(unittest.TestCase):
 
     def test_final_ci_change_or_stop_at_readback_prevents_dispatch(self):
         self.reviewed()
+        original = self.gh.chat_delivery_snapshot
         reads = 0
-        original = self.gh.local_merge_checks
-        def changed(head):
+        def changed(*args, **kwargs):
             nonlocal reads
-            if head == self.head:
-                reads += 1
-                if reads > 1:
-                    return [{'status': 'COMPLETED', 'conclusion': 'FAILURE'}]
-            return original(head)
-        with patch.object(self.gh, 'local_merge_checks', side_effect=changed), self.assertRaisesRegex(Halt, 'GitHub checks'):
+            reads += 1
+            if reads == 4:
+                self.gh.ci = [{'status': 'COMPLETED', 'conclusion': 'FAILURE'}]
+            return original(*args, **kwargs)
+        with patch.object(self.gh, 'chat_delivery_snapshot', side_effect=changed), self.assertRaisesRegex(Halt, 'GitHub checks'):
             self.call(apply=True)
         self.assertEqual(self.gh.attempts, [])
         self.assertNotIn('chat_merge', read_json(self.path))
-        self.reviewed()  # A demonstrably unsent attempt can recover, without a refund.
-        self.call(apply=True)
+        self.gh.ci = [{'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]
+        self.reviewed(); self.call(apply=True)
         self.assertEqual(len(read_json(self.path)['delivery_attempts']), 2)
         self.assertEqual(len(self.gh.attempts), 1)
 
     def test_stop_during_final_github_read_keeps_intent_without_dispatch(self):
         self.reviewed()
+        original = self.gh.chat_delivery_snapshot
         reads = 0
-        original = self.gh.local_merge_checks
-        def stop(head):
+        def stop(*args, **kwargs):
             nonlocal reads
-            if head == self.head:
-                reads += 1
-                if reads > 1:
-                    (common_dir(self.root) / 'sfc-stop').touch()
-            return original(head)
-        with patch.object(self.gh, 'local_merge_checks', side_effect=stop), self.assertRaisesRegex(Halt, 'stopped'):
+            snapshot = original(*args, **kwargs); reads += 1
+            if reads == 4:
+                (common_dir(self.root) / 'sfc-stop').touch()
+            return snapshot
+        with patch.object(self.gh, 'chat_delivery_snapshot', side_effect=stop), self.assertRaisesRegex(Halt, 'stopped'):
             self.call(apply=True)
         self.assertEqual(self.gh.attempts, [])
         self.assertNotIn('chat_merge', read_json(self.path))

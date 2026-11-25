@@ -255,6 +255,20 @@ class ChatTrackingTests(unittest.TestCase):
         self.gh.pull['state'] = 'MERGED'
         self.assertEqual(self.sync()['board_stage'], 'Done')
 
+    def test_an_archived_partial_pr_cannot_become_delivery_after_another_partial(self):
+        self.start(); self.update('partial-1', 'QA', pr=41, milestone_only=True); self.sync()
+        self.gh.pull['state'] = 'MERGED'; self.sync()
+        self.gh.pull.update(number=42, url='https://github.com/example/app/pull/42', state='OPEN')
+        self.update('partial-2', 'QA', pr=42, milestone_only=True); self.sync()
+        self.gh.pull['state'] = 'CLOSED'; self.sync()
+        for index, kwargs in enumerate(({}, {'closes_issue': True})):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(Halt, 'archived milestone'):
+                self.update('stale-reuse-' + str(index), 'Review', pr=41, **kwargs)
+        record = read_json(chat_tracking.task_path(self.root, self.task))
+        self.assertEqual(record['pr'], 42)
+        self.assertEqual(record['milestone_prs'][0]['pr'], 41)
+        self.assertNotIn((1, 'Done'), self.gh.writes)
+
     def test_partial_pr_with_uncertain_notes_cannot_be_replaced(self):
         self.start(); self.update('partial', 'QA', pr=41, milestone_only=True)
         self.gh.pull['state'] = 'MERGED'; self.gh.lose_note_response = True

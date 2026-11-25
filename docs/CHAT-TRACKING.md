@@ -83,7 +83,7 @@ QA, Review or merged Done update.
 Codex records a partial PR with `--milestone-only`. Its merge records progress
 without completing the task. After verified terminal readback and pending-write
 reconciliation, the task can link its actual delivery PR; the earlier receipt is
-retained; a milestone-only PR cannot be promoted to delivery. Omitted flags and existing records retain their delivery-PR meaning.
+retained; current or archived milestone-only PRs cannot be promoted to delivery. Omitted flags and existing records retain their delivery-PR meaning.
 `--closes-issue` additionally authorizes GitHub's native closing relationship.
 
 Record Review when the change is reviewed. A genuine blocker can be recorded as
@@ -117,8 +117,14 @@ merge outcomes keep the intent and permit only readback, never a second write.
 Final verification runs in a new detached checkout. Applicable CI follows
 [GitHub's test-merge precedence](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#conflicts-between-head-commit-and-test-merge-commit),
 with complete inventories and the live PR/issue/refs checked last. The final
-query reads PR eligibility, issue policy and routing meanings together. An
-incomplete combined label/field inventory requires a handoff rather than
+query reads PR eligibility, both CI rollups, complete-inventory check
+identities, issue policy, routing meanings and open PR heads together. Complete
+paginated commit-check inventories are retained because PR rollups can omit
+checks. The final query refreshes those exact identities as well as the rollups.
+It retains check identities and outcomes and
+refuses newly reachable heads of other open PRs. Shallow or replaced histories
+require a handoff. An
+incomplete combined check/label/field/open-PR inventory requires a handoff rather than
 using stale pages. A known
 pre-dispatch failure retains its history and may use the remaining preparation
 allowance; it does not receive a refund. Native CLI capability is checked before
