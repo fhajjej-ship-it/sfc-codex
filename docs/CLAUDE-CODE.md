@@ -67,9 +67,14 @@ that aren't Git checkouts are ignored silently.
 
 The `PreToolUse` guard applies the same literal checks as on Codex to `Bash`:
 credential paths, force or base-branch pushes, and deletions outside the
-checkout. For `Edit`, `Write`, `MultiEdit` and `NotebookEdit` it blocks targets
-outside the session's working directory and credential files, and scans the
-written text for live-looking secrets. These are mistake guards, not a security
+checkout. For `Edit`, `Write`, `MultiEdit` and `NotebookEdit` it allows targets
+inside the session's working directory or the OS temporary folders (`$TMPDIR`,
+Python's `tempfile.gettempdir()` and `/tmp`), where scratch files belong. A
+temporary folder setting that is `/` or contains your home folder grants
+nothing. Links are resolved first, so a link in a temporary folder can't reach
+other locations. Everything else, including other repositories and your home
+folder, is blocked. Credential files are blocked everywhere, and the written
+text is scanned for live-looking secrets. These are mistake guards, not a security
 sandbox.
 
 ## Limits
