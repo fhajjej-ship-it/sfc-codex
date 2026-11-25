@@ -1261,6 +1261,33 @@ class HookTests(unittest.TestCase):
         self.assertIsNotNone(self.check_command("git push"))
         self.assertIsNone(self.check_command("git push origin feature"))
 
+    def test_push_checks_each_command_of_a_compound_line(self):
+        allowed = ["git push -u origin feature && gh pr create --base main --head feature",
+                   "git push origin feature; echo main",
+                   "git push origin feature | tee push.log && git checkout main",
+                   "git push origin feature 2>&1 && echo done-on-main",
+                   "git status && echo push main",
+                   "(git push origin feature) && gh pr merge --base master"]
+        for command in allowed:
+            with self.subTest(command=command):
+                self.assertIsNone(self.check_command(command))
+        blocked = ["git push origin feature && git push origin main",
+                   "echo main; git push origin HEAD:main",
+                   "git fetch && git push",
+                   "git fetch || git push origin",
+                   "git commit -m x&&git push origin main",
+                   "git push 2>&1 origin main",
+                   "git push origin feature && git push -f origin feature",
+                   "cd repo && (git push --all)",
+                   "git push origin feature | cat; git push origin refs/heads/master"]
+        for command in blocked:
+            with self.subTest(command=command):
+                self.assertIsNotNone(self.check_command(command))
+        self.assertEqual(self.guard.segments("a && b | c; d & e || f (g) 2>&1 h"),
+                         [["a"], ["b"], ["c"], ["d"], ["e"], ["f"], ["g"], ["2", ">&", "1", "h"]])
+        self.assertEqual(self.guard.segments("git push 2>&1 origin main"),
+                         [["git", "push", "2", ">&", "1", "origin", "main"]])
+
     def test_apply_patch_cannot_escape_worktree(self):
         self.assertIsNotNone(self.guard.check({"tool_name": "apply_patch", "cwd": "/tmp/project",
             "tool_input": {"command": "*** Begin Patch\n*** Add File: ../escape.txt\n+bad\n*** End Patch"}}, Path("/tmp/project"), BASE_CONFIG))
