@@ -332,10 +332,8 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.gh.writes.count((1, 'Done')), 1)
 
     def test_pr_required_decision_is_saved_and_prevents_local_completion(self):
-        with self.assertRaisesRegex(Halt, 'Choose --delivery'):
-            self.start(delivery=None)
-        self.assertEqual(self.start()['delivery'], 'pr-required')
         self.assertEqual(self.start(delivery=None)['delivery'], 'pr-required')
+        self.assertEqual(self.start()['delivery'], 'pr-required')
         with self.assertRaisesRegex(Halt, 'cannot change its delivery choice'):
             self.start(delivery='local-only')
         with self.assertRaisesRegex(Halt, 'requires a linked merged pull request'):
@@ -343,6 +341,12 @@ class ChatTrackingTests(unittest.TestCase):
         with self.assertRaisesRegex(Halt, 'requires a linked merged pull request'):
             self.update('done', 'Done')
         self.assertEqual(self.sync()['board_stage'], 'Building')
+
+    def test_default_does_not_replace_explicit_local_delivery_on_resume(self):
+        self.start(delivery='local-only')
+        self.assertEqual(self.start(delivery=None)['delivery'], 'local-only')
+        self.update('local', 'Done', local_done=True)
+        self.assertEqual(self.sync()['board_stage'], 'Done')
 
     def test_pre_upgrade_task_can_resume_without_a_delivery_decision(self):
         self.start(delivery='local-only')
@@ -415,6 +419,17 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertIsNone(status['board_stage'])
         self.assertEqual(status['pending'], ['start', 'verified'])
 
+    def test_cli_defaults_new_work_to_pr_delivery(self):
+        cli = Path(__file__).resolve().parents[1] / 'scripts/sfc.py'
+        result = run([sys.executable, '-B', str(cli), '--root', str(self.root),
+                      'track', 'start', '--task', self.task, '--type', 'Documentation',
+                      '--title', 'Document delivery', '--summary', 'Explain shared delivery',
+                      '--acceptance', 'Repository guidance explains delivery'], self.root)
+        task = json.loads(result.stdout)
+        self.assertEqual(task['delivery'], 'pr-required')
+        self.assertEqual(task['desired_stage'], 'Building')
+        self.assertIsNone(task['board_stage'])
+
     def test_chat_prompt_hook_cues_tracking_and_watcher_cannot_start(self):
         event = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'chat-fixture', 'turn_id': 'turn-1',
                  'cwd': str(self.root), 'permission_mode': 'default'}
@@ -432,6 +447,9 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertIn('--delivery pr-required', instructions)
         self.assertIn('--delivery local-only', instructions)
         self.assertIn('track update --pr-url', instructions)
+        self.assertIn('default for shared-repository changes, including documentation', instructions)
+        self.assertIn('without repeated per-PR approval', instructions)
+        self.assertIn('configured change-size limit', instructions)
         runtime = SessionRuntime(self.root, environ={})
         self.assertEqual(runtime.attach(event, native_thread=event['session_id'])['state'], 'tracking')
         auth_path = common_dir(self.root) / 'sfc-autostart.json'

@@ -322,7 +322,7 @@ def main(argv=None):
     tracked_start.add_argument('--acceptance', action='append', default=[])
     tracked_start.add_argument('--issue', type=int)
     tracked_start.add_argument('--delivery', choices=chat_tracking.DELIVERY_MODES,
-                               help='required when starting a new task')
+                               help='new tasks default to pr-required; use local-only for explicit local delivery')
     tracked_update = tracking.add_parser('update', help='queue an observed milestone and its evidence')
     tracked_update.add_argument('--task', required=True)
     tracked_update.add_argument('--event', required=True)

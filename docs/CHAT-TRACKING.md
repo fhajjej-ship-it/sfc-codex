@@ -29,9 +29,11 @@ Use the chat prefix supplied by the hook to find work already recorded.
 Use a stable task ID for each independent change. If the user names an issue
 on the configured Project, pass `--issue NUMBER` when starting. Otherwise the
 first sync creates a typed issue with observable acceptance criteria.
-Choose the delivery mode at the start. Use `--delivery pr-required` for
-changes intended for the shared repository and `--delivery local-only` for
-work delivered locally. SFC retains that choice across turns. Routine questions
+Codex chooses delivery from the requested outcome. New tasks default to
+`pr-required` for changes intended for the shared repository, including
+documentation and user-facing workflow guidance. Use `--delivery local-only`
+when the user explicitly requests local delivery. Existing choices are retained
+across turns, including previously recorded local work. Routine questions
 and status checks need no ticket. Keep transcripts, credentials, private paths
 and raw logs local.
 
@@ -44,7 +46,7 @@ python3 "<plugin>/scripts/sfc.py" --root "<repo>" track start \
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track sync --task chat-example-export
 ```
 
-After focused checks pass, open an authorized draft PR during QA so GitHub CI
+Carry authorized shared-repository work through a PR. After focused checks pass, open a draft PR during QA so GitHub CI
 can run during verification. Pass the exact URL returned by GitHub with
 `--pr-url`. SFC verifies the PR and its configured target branch, then adds
 the link to the issue's QA milestone. This works across repositories and
@@ -56,6 +58,15 @@ Blocked and later followed by Building or QA. PR-required work reaches Done
 after verification of the linked merge. For local-only work, record the
 verification and use `--local-done`. Existing tasks saved before delivery
 choices were introduced retain their original completion rules.
+
+With configured automatic merge policy and existing user authority for the
+repository, base and task, Codex completes eligible merges after required checks
+and independent review. It preserves the configured size limit, sensitive-path
+rules, branch protections and exact candidate/base evidence. It can enable the
+repository's normal GitHub auto-merge once the candidate qualifies. A queued
+auto-merge remains in Review until GitHub confirms it merged. Human merge
+policies and explicit local delivery choices still apply. See the SFC skill's
+delivery steps for the required verification and merge methods.
 
 ```sh
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track update \

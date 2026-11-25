@@ -130,8 +130,10 @@ def start(root, config, *, task, title, summary, work_type=None, acceptance=(), 
             if delivery is not None and delivery != record.get('delivery'):
                 raise Halt('Restarting a task cannot change its delivery choice')
             return view(record)
+        if delivery is None:
+            delivery = 'pr-required'
         if delivery not in DELIVERY_MODES:
-            raise Halt('Choose --delivery pr-required or --delivery local-only before starting new work')
+            raise Halt('Invalid delivery choice; use pr-required or local-only')
         if issue is not None:
             for existing in directory(root).glob('*.json'):
                 other = read_json(existing)
