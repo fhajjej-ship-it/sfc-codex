@@ -1,11 +1,11 @@
 ---
 name: sfc
-description: Track work started in Codex chat on GitHub Projects. Use for recording features, bugs and maintenance, linking PRs, reflecting checks or review outcomes, and configuring Projects.
+description: Track work started in a Codex or Claude Code chat on GitHub Projects. Use for recording features, bugs and maintenance, linking PRs, reflecting checks or review outcomes, and configuring Projects.
 ---
 
 # SFC
 
-SFC records work done in the current Codex chat. Use that chat's model and the
+SFC records work done in the current Codex or Claude Code chat. Use that chat's model and the
 repository's usual tools for implementation, tests and review. Work starts with
 the user's request. A board label or column never authorizes work.
 
@@ -81,7 +81,8 @@ missing required check, unresolved finding or uncertain write remains pending.
 Use `track merge --task ID --worktree PATH --head SHA --base SHA --prepare`
 for the configured chat atomic provider. It runs the configured checks and
 an independent native Codex review with parsed completion and acceptance
-coverage, within a finite, persisted preparation allowance. During implementation,
+coverage (it needs the Codex CLI, including from a Claude Code chat; without it
+preparation halts and delivery uses the repository's normal merge process), within a finite, persisted preparation allowance. During implementation,
 use focused checks. Preparation owns its full suite and native review; do not
 duplicate them beforehand. Qualified evidence permits marking a new PR ready and recording Review. An authorized
 already-ready PR uses the same real verification and independent review; do not
@@ -105,7 +106,7 @@ Read back the merged PR, then sync the task so Done means verified delivery.
 
 ## Ticket chats
 
-New bugs, maintenance tasks and features get their own Codex chat. Check for an
+New bugs, maintenance tasks and features get their own chat. Check for an
 existing ticket chat and board card first, and reuse both for follow-ups.
 Keep routine questions and initial discussion in the current chat. Start the
 work in the ticket's chat once the user asks to proceed.

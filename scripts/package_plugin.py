@@ -48,6 +48,45 @@ def contents(root=ROOT, *, codex_root=None):
     return result
 
 
+CLAUDE_INCLUDED = ["skills", "scripts", "schemas", "hooks/guard.py", "docs", "assets", "README.md", "LICENSE"]
+
+
+def claude_contents(root=ROOT):
+    """Claude Code layout: the Codex manifests, hooks and MCP file are excluded.
+
+    Claude Code always loads hooks/hooks.json and .mcp.json from a plugin root,
+    so the overlay in claude/ supplies Claude hooks and no Codex file reaches
+    that layout. Codex-only skill interface metadata is dropped.
+    """
+    result = {}
+    for entry in [*CLAUDE_INCLUDED, "claude"]:
+        path = root / entry
+        files = sorted(path.rglob('*')) if path.is_dir() else [path]
+        for file in files:
+            if (not file.is_file() or file.is_symlink() or '__pycache__' in file.parts or
+                    file.suffix == '.pyc' or file.name == '.DS_Store'):
+                continue
+            name = file.relative_to(root).as_posix()
+            if entry == "claude":
+                name = name.removeprefix("claude/")
+            elif name.startswith("skills/") and "/agents/" in name:
+                continue
+            result[name] = file.read_bytes()
+    return result
+
+
+def export(destination, files):
+    """Unpacked plugin folder for `claude --plugin-dir` or a local marketplace."""
+    destination = Path(destination)
+    if destination.exists():
+        raise FileExistsError(f"{destination} exists; never overwrite an earlier export")
+    for name, data in files.items():
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    return {'directory': str(destination), 'files': len(files)}
+
+
 def package(destination, files):
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -63,8 +102,14 @@ def package(destination, files):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--codex-root', type=Path, help='Export compatibility format for the exact native installedPath')
+    parser.add_argument('--claude', action='store_true', help='Build the Claude Code plugin archive and unpacked folder')
     args = parser.parse_args()
     info = validate()
+    if args.claude:
+        files = claude_contents()
+        stem = ROOT / 'dist' / f"sfc-{info['version']}-claude"
+        print(json.dumps({**package(stem.with_suffix('.zip'), files), **export(stem, files)}, indent=2))
+        return
     suffix = '-codex' if args.codex_root else ''
     destination = ROOT / 'dist' / f"sfc-{info['version']}{suffix}.zip"
     print(json.dumps(package(destination, contents(codex_root=args.codex_root)), indent=2))

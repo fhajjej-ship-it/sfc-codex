@@ -238,8 +238,9 @@ apply only the saved, unchanged choice. No repeated approval is needed. Config,
 project or authorization drift and stop requests require focused inspection;
 do not renew budgets or retry uncertain writes. Existing projects use explicit
 enable/disable commands without re-onboarding or replacing config.
-Review the bundled hook in Codex `/hooks` or **Settings > Hooks**. SFC never
-bypasses trust or edits global Codex configuration. See [auto-start scope,
+Review the bundled hook in Codex `/hooks` or **Settings > Hooks** (Claude Code:
+`/hooks`). SFC never bypasses trust or edits global Codex or Claude Code
+configuration. See [auto-start scope,
 restart policy and host limits](../../../docs/AUTOSTART.md). Automatic merging
 still needs configured `auto` plus separate saved `autostart --enable --allow-merge`
 authority, or the existing manual watch/run opt-in.
@@ -247,7 +248,7 @@ authority, or the existing manual watch/run opt-in.
 Report each `capabilities` entry and exact remaining `next_steps` from onboarding
 or `onboard-finish`. `onboarding_complete` covers project configuration only.
 Configured checks/workers are not executed checks/account availability; armed
-watching is not observation. Inspect Codex-owned hook trust/disabled state and
+watching is not observation. Inspect host-owned hook trust/disabled state and, on Codex,
 use `session_status` on the actual MCP connection to establish connected versus
 observing. If tools are unavailable, report those specific missing native steps;
 never infer them from a package, local authorization or a saved connection receipt.

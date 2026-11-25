@@ -22,7 +22,7 @@ from .lifeline import supported
 EVENTS = {'SessionStart', 'UserPromptSubmit', 'PreModelRequest'}
 
 
-def request_attachment(event, environ=None):
+def request_attachment(event, environ=None, *, host='codex'):
     """Short command hook records actual root fields, including absent agent_id.
 
     Root prompt turn IDs bind MCP fallbacks to the full, child-checked event.
@@ -31,6 +31,8 @@ def request_attachment(event, environ=None):
     a host event or trusting a model-supplied session ID as authority.
     """
     environ = os.environ if environ is None else environ
+    if host == 'claude':
+        return claude_attachment(event, environ)
     if (environ.get('SFC_WORKER') or environ.get('SFC_TEST_CONTEXT') or event.get('agent_id') or
             event.get('hook_event_name') not in ('SessionStart', 'UserPromptSubmit') or
             not isinstance(event.get('session_id'), str) or not event['session_id'].strip() or
@@ -60,6 +62,35 @@ def request_attachment(event, environ=None):
     value = {'state': 'pending', 'detail': 'Native attachment requested; MCP startup/trust/policy may still be pending', 'recorded_at': now()}
     write_json(status_path, value)
     return value
+
+
+def claude_attachment(event, environ):
+    """Claude Code chat tracking only; no native MCP observer or watcher window.
+
+    Claude's UserPromptSubmit has no turn ID, so each prompt gets a fresh
+    random slot. The session prefix still comes from the host session ID, so
+    follow-up prompts find the same chat's tasks with `track status --prefix`.
+    Subagent and resumed-compaction events are ignored as on Codex.
+    """
+    if (environ.get('SFC_WORKER') or environ.get('SFC_TEST_CONTEXT') or event.get('agent_id') or
+            event.get('hook_event_name') not in ('SessionStart', 'UserPromptSubmit') or
+            not isinstance(event.get('session_id'), str) or not event['session_id'].strip() or
+            not isinstance(event.get('cwd'), str) or
+            (event['hook_event_name'] == 'SessionStart' and event.get('source') not in ('startup', 'resume'))):
+        return {'state': 'ignored'}
+    end = time.monotonic() + 3
+    with bounded_io(lambda: max(0.01, end - time.monotonic())):
+        from . import chat_tracking
+        try:
+            root = chat_tracking.project_root(event['cwd'])
+        except (Halt, OSError):
+            # Not a Git checkout: no SFC project, so the prompt is left alone.
+            return {'state': 'ignored'}
+        if not chat_tracking.chat_mode(root):
+            return {'state': 'ignored'}
+    return {'state': 'tracking', 'root': str(root),
+            'prefix': 'chat-' + autostart.digest(event['session_id'])[:16],
+            'turn': autostart.digest(uuid.uuid4().hex)[:12]}
 
 
 class SessionRuntime:

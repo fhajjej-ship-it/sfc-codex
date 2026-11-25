@@ -80,6 +80,22 @@ python3 scripts/install_codex_plugin.py
 
 Keep the extracted directory as the installer's registered source.
 
+## Use with Claude Code
+
+SFC chat tracking also works in Claude Code. A Claude Code layout is built from
+this source; there is no Claude release asset yet. From a checkout:
+
+```sh
+python3 scripts/package_plugin.py --claude
+claude plugin marketplace add "$PWD/dist/sfc-0.2.2-claude"
+claude plugin install sfc@sfc-marketplace
+```
+
+Restart Claude Code and review the SFC hooks in `/hooks`. Setup and tracking
+work the same way as in Codex. Requires Claude Code, Python 3.10+, Git and an
+authenticated GitHub CLI. `track merge` still needs the Codex CLI for its
+independent review; see [SFC for Claude Code](docs/CLAUDE-CODE.md).
+
 ## How it works
 
 | Board stage | What happened in Codex |
