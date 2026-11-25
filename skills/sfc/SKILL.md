@@ -38,6 +38,7 @@ plugin code and skills read-only.
    requests badge. Sync creates and verifies that native relationship through
    `addCloseIssueReferences`, including across repositories. A comment alone
    does not establish the attachment. Preserve existing links and pending writes.
+   Report attachment warnings separately from verified milestone delivery.
    GitHub CI can run while verification continues. Move to Review as the change is
    reviewed and follow the repository's normal checks and merge permissions.
    With configured `auto` policy and existing authority for the repository,
@@ -65,13 +66,19 @@ Explain a missing authorization once with the concrete PR ready for review.
 Finish the required checks and independent review on the exact candidate.
 Compare the current remote head and base with that evidence, and refresh the
 affected verification after either changes. Check the configured change-size
-limit, sensitive-path policy and repository protections. A draft, failed or
+limit, sensitive-path policy and repository protections. Evaluate
+`factory.policy_reasons(config, issue_card, pr)` against the actual tracked
+issue and PR, including `human-only`, security and configured label gates.
+Any policy reason requires its documented handoff. A draft, failed or
 missing required check, unresolved finding or uncertain write remains pending.
-Use the repository's configured merge method. For GitHub-protected merging,
-the normal GitHub CLI path can enable `gh pr merge --auto --match-head-commit
-<verified-sha>` with the repository's permitted merge strategy. Where atomic
-local verification is configured, use its checked supervisor and required
-receipts as described in [local merging](../../docs/LOCAL-MERGE.md).
+Use a supported repository merge provider that enforces both the reviewed
+head and base through the actual write. An expected-head-only queued merge
+cannot establish that binding. Keep Review and report a human handoff when
+the available provider cannot protect both inputs.
+The legacy local-verification `run` entry point is unavailable in chat mode.
+Existing projects with that mode need an authorized maintainer merge or a
+human handoff followed by tracking sync. Preserve the saved mode and receipts;
+consult [local merging](../../docs/LOCAL-MERGE.md) for its retained protocol.
 After a lost response, inspect the existing merge request before any new write.
 
 Keep the task in Review while auto-merge is queued and report its actual wait.

@@ -191,7 +191,9 @@ class ChatTrackingTests(unittest.TestCase):
         self.start()
         self.update('draft', 'QA', pr=41)
         self.gh.lose_attachment_response = True
-        self.assertEqual(self.sync()['state'], 'pending')
+        waiting = self.sync()
+        self.assertEqual((waiting['state'], waiting['board_stage']), ('synced', 'QA'))
+        self.assertEqual(waiting['native_pr_attachment']['state'], 'pending')
         self.gh.lose_attachment_response = False
         self.assertEqual(self.sync()['state'], 'synced')
         self.assertEqual(len(self.gh.native_writes), 1)
@@ -200,9 +202,9 @@ class ChatTrackingTests(unittest.TestCase):
         self.start()
         self.update('draft', 'QA', pr=41)
         self.gh.skip_attachment_write = True
-        self.assertEqual(self.sync()['state'], 'pending')
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
         self.gh.skip_attachment_write = False
-        self.assertEqual(self.sync()['state'], 'pending')
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
         self.assertEqual(len(self.gh.native_writes), 1)
 
     def test_external_native_unlink_is_preserved(self):
@@ -210,14 +212,32 @@ class ChatTrackingTests(unittest.TestCase):
         self.update('draft', 'QA', pr=41)
         self.assertEqual(self.sync()['state'], 'synced')
         self.gh.native_refs.clear()
-        self.assertEqual(self.sync()['state'], 'pending')
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
         self.assertEqual(len(self.gh.native_writes), 1)
+
+    def test_removed_attachment_does_not_block_verified_milestones_or_merge_completion(self):
+        self.start()
+        self.update('draft', 'QA', pr=41)
+        self.sync()
+        self.gh.native_refs.clear()
+        self.update('reviewed', 'Review')
+        review = self.sync()
+        self.assertEqual(review['board_stage'], 'Review')
+        self.assertEqual(review['native_pr_attachment']['state'], 'pending')
+        self.gh.pull['state'] = 'MERGED'
+        done = self.sync()
+        self.assertEqual((done['state'], done['board_stage']), ('synced', 'Done'))
+        self.assertEqual(done['native_pr_attachment']['state'], 'pending')
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+        self.assertEqual(len(self.gh.native_writes), 1)
+        self.gh.native_refs.append('example/app:41')
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'verified')
 
     def test_ten_existing_native_attachments_are_preserved(self):
         self.start()
         self.update('draft', 'QA', pr=41)
         self.gh.native_refs = ['other-' + str(number) for number in range(10)]
-        self.assertEqual(self.sync()['state'], 'pending')
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
         self.assertEqual(self.gh.native_writes, [])
 
     def test_native_reference_drift_before_write_does_not_attach(self):
@@ -235,7 +255,7 @@ class ChatTrackingTests(unittest.TestCase):
             return value
 
         with patch.object(self.gh, 'chat_pr_attachment', side_effect=changed):
-            self.assertEqual(self.sync()['state'], 'pending')
+            self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
         self.assertEqual(self.gh.native_writes, [])
 
     def test_native_attachment_transport_checks_identity_and_pagination(self):
@@ -635,9 +655,34 @@ class ChatTrackingTests(unittest.TestCase):
             with redirect_stderr(io.StringIO()):
                 self.assertEqual(sfc.main([*command, '--merge-policy', 'human', '--allow-merge']), 1)
             self.assertFalse((self.root / '.sfc/config.json').exists())
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(sfc.main([*command, '--allow-merge']), 1)
             with redirect_stdout(io.StringIO()) as output:
-                self.assertEqual(sfc.main([*command, '--allow-merge']), 0)
+                self.assertEqual(sfc.main([*command, '--allow-merge', '--preview']), 0)
+            automatic = json.loads(output.getvalue())
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(sfc.main([*command, '--allow-merge', '--expected-review',
+                                           preview['setup_review']['review_digest']]), 1)
+            self.assertFalse((self.root / '.sfc/config.json').exists())
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(sfc.main([*command, '--allow-merge', '--expected-review',
+                                           automatic['setup_review']['review_digest']]), 0)
             applied = json.loads(output.getvalue())
         expected = {'repo': 'example/app', 'base_branch': 'main', 'scope': 'user-requested-tasks'}
         self.assertEqual(applied['chat_merge_authority'], expected)
         self.assertEqual(load_config(self.root)['chat_merge_authority'], expected)
+
+    def test_linked_checkout_cannot_shadow_the_primary_human_merge_policy(self):
+        config = {**self.c, 'merge_policy': 'human'}
+        write_json(self.root / '.sfc/config.json', config)
+        original = (self.root / '.sfc/config.json').read_bytes()
+        checkout = self.root / '.sfc/worktrees/onboarding-shadow'
+        git(self.root, 'worktree', 'add', '--detach', checkout)
+        with patch.object(sfc, 'GitHub') as github, redirect_stderr(io.StringIO()):
+            result = sfc.main(['--root', str(checkout), 'onboard', '--repo', 'example/app',
+                               '--owner', 'example', '--project', '1', '--base', 'main',
+                               '--allow-merge', '--expected-review', 'prior-preview'])
+        self.assertEqual(result, 1)
+        github.assert_not_called()
+        self.assertEqual((self.root / '.sfc/config.json').read_bytes(), original)
+        self.assertFalse((checkout / '.sfc/config.json').exists())

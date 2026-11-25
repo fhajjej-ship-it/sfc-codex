@@ -19,7 +19,8 @@ then ask Codex to check the view with `doctor`.
 
 New setup defaults to automatic merge policy. Explain the repository, base,
 required checks and change-size limit during setup. When the user authorizes
-automatic delivery for their requested tasks, include `--allow-merge`; setup
+automatic delivery for their requested tasks, preview with `--allow-merge`
+and apply that exact `--expected-review` digest; setup
 retains that exact repository/base scope as `chat_merge_authority`. Offer
 `--merge-policy human` for an explicit merge gate. Existing project settings
 retain their saved policy and authority. An automatic policy preference alone
@@ -68,6 +69,9 @@ across repositories and preserves existing attachments. A lost response is
 confirmed by readback before another operation; missing confirmation or an
 external unlink remains pending. Keep Linked pull requests visible in the
 saved board view. Milestone comments retain their PR link as supporting context.
+Attachment warnings are reported separately from milestone sync. A missing
+badge preserves its write intent and cannot block an independently verified
+QA, Review or merged Done update.
 
 Record Review when the change is reviewed. A genuine blocker can be recorded as
 Blocked and later followed by Building or QA. PR-required work reaches Done
@@ -79,8 +83,11 @@ With configured automatic merge policy and existing user authority for the
 repository, base and task, Codex completes eligible merges after required checks
 and independent review. It preserves the configured size limit, sensitive-path
 rules, branch protections and exact candidate/base evidence. It can enable the
-repository's normal GitHub auto-merge once the candidate qualifies. A queued
-auto-merge remains in Review until GitHub confirms it merged. Human merge
+repository's supported merge provider only when it binds the reviewed head
+and base through the write. Expected-head-only queueing cannot supply that
+guarantee. Unsupported providers and legacy local-verification configurations
+receive a concrete maintainer or human merge handoff; their settings are
+preserved. A queued merge remains in Review until GitHub confirms it merged. Human merge
 policies and explicit local delivery choices still apply. See the SFC skill's
 delivery steps for the required verification and merge methods.
 

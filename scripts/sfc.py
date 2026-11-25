@@ -162,12 +162,19 @@ def save_project_config(root, config):
 def onboard_chat(root, args):
     if chat_tracking.chat_mode(root) or (root / '.sfc/onboarding.json').exists():
         raise Halt('SFC is already configured. Use doctor to check the configured Project.')
+    primary = git(root, 'worktree', 'list', '--porcelain', '-z').split('\0', 1)[0]
+    if primary.startswith('worktree '):
+        root = Path(primary.removeprefix('worktree ')).resolve()
+    if chat_tracking.chat_mode(root) or (root / '.sfc/onboarding.json').exists():
+        raise Halt('SFC is already configured in the primary checkout. Preserve its saved merge policy.')
     if (args.auto_start is True or args.session_lifetime is True
             or args.release_config or args.release_authorization):
         raise Halt('SFC tracks work started in Codex chat. Set up the Project without a background worker or release grant.')
     merge_policy = args.merge_policy or 'auto'
     if args.allow_merge and merge_policy != 'auto':
         raise Halt('--allow-merge requires the automatic merge policy')
+    if args.allow_merge and not args.preview and not args.expected_review:
+        raise Halt('Preview --allow-merge, then apply its --expected-review digest before saving merge authority')
     repo = args.repo or GitHub(root, {"project": {}}).call("repo", "view", "--json", "nameWithOwner")["nameWithOwner"]
     branch = args.base or git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False).removeprefix("origin/")
     if not branch:

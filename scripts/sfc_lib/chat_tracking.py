@@ -77,9 +77,17 @@ def local_lock(path):
 
 def view(record):
     latest = record['events'][-1]
+    attachment = None
+    receipt = record.get('native_pr_attachment')
+    if receipt:
+        attachment = {'state': receipt['state'], 'url': receipt['binding']['url']}
+    if record.get('native_pr_attachment_error'):
+        attachment = {**(attachment or {}), 'state': 'pending',
+                      'detail': record['native_pr_attachment_error']}
     return {'task': record['task'], 'title': record['title'], 'issue': record.get('issue'),
             'delivery': record.get('delivery'), 'pr': record.get('pr'), 'pr_url': record.get('pr_url'),
             'pull_request': record.get('pull_request'),
+            'native_pr_attachment': attachment,
             'desired_stage': latest['stage'],
             'latest_summary': latest['summary'] or record['summary'],
             'board_stage': record.get('board_stage'),
@@ -368,10 +376,12 @@ def sync(gh, root, task):
         latest = record['events'][-1]
         follow_pr = target is not None and latest['stage'] != 'Done'
         pending = any(not event.get('synced') for event in record['events'])
-        closing_pr_url = latest.get('closing_pr_url') if pending else None
+        attachment_pending = bool(record.get('native_pr_attachment_error') or
+                                  record.get('native_pr_attachment', {}).get('state') == 'intent')
+        closing_pr_url = latest.get('closing_pr_url') if pending or attachment_pending else None
         follow_closure = (target is None and record.get('delivery') != 'local-only'
                           and (latest['stage'] in ('QA', 'Review') or closing_pr_url is not None))
-        if not (follow_pr or follow_closure or pending):
+        if not (follow_pr or follow_closure or pending or attachment_pending):
             return {'state': 'synced', **view(record)}
         try:
             if not record.get('issue'):
@@ -392,7 +402,15 @@ def sync(gh, root, task):
             if pull:
                 record['pull_request'] = pull
                 attachment_target = target or pr_target(gh.c['repo'], None, pull['url'])
-                sync_pr_attachment(gh, path, record, attachment_target)
+                try:
+                    sync_pr_attachment(gh, path, record, attachment_target)
+                except (Halt, OSError, ValueError, KeyError) as exc:
+                    # Link writes retain their own intent. Independently
+                    # verified milestone and merge observations can still sync.
+                    record['native_pr_attachment_error'] = str(exc)
+                    write_json(path, record)
+                else:
+                    record.pop('native_pr_attachment_error', None)
                 if latest['stage'] != 'Done' and pull['state'] == 'MERGED':
                     # Save the completion event before writing either status field.
                     completion = {'id': 'sfc:pr-merged', 'stage': 'Done', 'pr': number,
