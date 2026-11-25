@@ -16,6 +16,33 @@ from sfc_lib.common import CommandCancelled, Processes, command_cancellation
 
 
 class CancellationTests(unittest.TestCase):
+    def test_delivery_sigterm_also_owns_common_git_and_github_io(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name); started = root / 'started'
+            child = ('import os,time; from pathlib import Path; '
+                     'Path(' + repr(str(started)) + ').write_text(str(os.getpid())); time.sleep(30)')
+            script = ('from pathlib import Path; import sys; from sfc_lib.common import Processes,run; '
+                      'from sfc_lib.chat_merge import owned_processes; '
+                      'p=Processes(Path(sys.argv[1])/"stop"); context=owned_processes(p); context.__enter__(); '
+                      'run([sys.executable,"-c",' + repr(child) + '],timeout=10)')
+            env = {**os.environ, 'PYTHONPATH': str(Path(__file__).resolve().parents[1] / 'scripts'), 'SFC_WORKER': '1'}
+            parent = subprocess.Popen([sys.executable, '-c', script, str(root)], env=env,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not started.exists():
+                    time.sleep(.02)
+                self.assertTrue(started.exists())
+                pid = int(started.read_text())
+                parent.send_signal(signal.SIGTERM); parent.wait(timeout=7)
+                status = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], capture_output=True, text=True).stdout.strip()
+                self.assertTrue(not status or status.startswith('Z'), 'Owned IO outlived its supervisor')
+            finally:
+                if parent.poll() is None:
+                    parent.terminate()
+                    try:parent.wait(timeout=4)
+                    except subprocess.TimeoutExpired:parent.kill();parent.wait()
+
     def test_delivery_sigterm_cleans_up_its_active_child_and_restores_handlers(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name); log = root / 'child.log'

@@ -41,6 +41,17 @@ fragment MergeRef on Ref {
  rules(first:1) { totalCount }
 }"""
 
+# Final delivery reads PR eligibility, complete first-page policy and routing
+# in one query; incomplete inventories hand off rather than using stale pages.
+from .priority import ITEM_SELECTION
+CHAT_DELIVERY_QUERY = LOCAL_MERGE_QUERY.replace(
+    '$head:String!', '$head:String!, $item:ID!, $field:ID!, $after:String').replace(
+    'issue(number:$issue) { id number url state repository { nameWithOwner } }',
+    'issue(number:$issue) { id number title body url state repository { nameWithOwner } '
+    'labels(first:100) { nodes { id name } pageInfo { hasNextPage endCursor } } }').replace(
+    '\n}\nfragment MergeRef', '\n' + ITEM_SELECTION +
+    '\nrouting:node(id:$field) { ... on ProjectV2SingleSelectField { id name options { id name } } }\n}\nfragment MergeRef')
+
 LOCAL_MERGE_CAPABILITIES = """query {
  mutation:__type(name:"Mutation") { fields { name args { name } } }
  update:__type(name:"RefUpdate") { inputFields { name } }
@@ -686,6 +697,14 @@ class GitHub:
         if not isinstance(data, dict) or not isinstance(data.get("repository"), dict):
             raise Halt("Local merge repository snapshot unavailable")
         return data["repository"]
+
+    def chat_delivery_snapshot(self, number, issue, base, head, item, field):
+        owner, name = self.c['repo'].split('/')
+        data = self.graphql(CHAT_DELIVERY_QUERY, {'owner': owner, 'name': name, 'number': number, 'issue': issue,
+                                                'base': base, 'head': head, 'item': item, 'field': field, 'after': None})
+        if not isinstance(data, dict) or not all(isinstance(data.get(k), dict) for k in ('repository', 'node', 'routing')):
+            raise Halt('Combined PR/issue/routing snapshot is unavailable')
+        return {**data['repository'], 'tracking_item': data['node'], 'routing_field': data['routing']}
 
     def local_merge_checks(self, head):
         """Enumerate latest checks/status contexts; never trust a truncated rollup."""

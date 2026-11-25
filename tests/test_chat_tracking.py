@@ -239,6 +239,8 @@ class ChatTrackingTests(unittest.TestCase):
         partial = self.sync()
         self.assertEqual((partial['board_stage'], partial['pr_role']), ('QA', 'milestone'))
         self.assertNotIn((1, 'Done'), self.gh.writes)
+        with self.assertRaisesRegex(Halt, 'terminal milestone'):
+            self.update('promote-finished-partial', 'Done', closes_issue=True)
         with self.assertRaisesRegex(Halt, 'milestone-only'):
             self.update('premature', 'Done')
         self.gh.pull.update(number=42, url='https://github.com/example/app/pull/42', state='OPEN')

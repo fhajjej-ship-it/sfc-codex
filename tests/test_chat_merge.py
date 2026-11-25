@@ -34,6 +34,22 @@ class ChatGitHub(AtomicGitHub):
             'parents': {'totalCount': 2, 'nodes': [{'oid': oid} for oid in self.merge_parents]}}
         return snapshot
 
+    def chat_delivery_snapshot(self, number, issue, base, head, item_id, field_id):
+        snapshot = self.local_merge_snapshot(number, issue, base, head)
+        card = next(value for value in self.items if value['number'] == issue)
+        meta = self.metadata()
+        content = {k: copy.deepcopy(card[k]) for k in ('id', 'number', 'title', 'body', 'url', 'state', 'repository')}
+        snapshot['issue'].update(copy.deepcopy(content))
+        snapshot['issue']['labels'] = {'nodes': [{'id': 'label-' + name, 'name': name} for name in card['labels']],
+                                       'pageInfo': {'hasNextPage': False, 'endCursor': None}}
+        snapshot['tracking_item'] = {'id': item_id, 'project': {'id': meta['id']}, 'content': content,
+                                     'fieldValues': {'nodes': [{'field': {'id': meta['field']},
+                                                               'optionId': meta['options'][card['status']]}],
+                                                     'pageInfo': {'hasNextPage': False, 'endCursor': None}}}
+        snapshot['routing_field'] = {'id': meta['field'], 'name': self.c['status_field'],
+                                     'options': [{'name': name, 'id': value} for name, value in meta['options'].items()]}
+        return snapshot
+
     def local_merge_checks(self, head):
         return copy.deepcopy(self.merge_ci) if head == self.merge_oid else super().local_merge_checks(head)
 
@@ -111,7 +127,10 @@ class ChatMergeTests(unittest.TestCase):
         self.processes = NativeProcesses(self.root / '.sfc/stop')
         self.processes.mutate = lambda result: [row.update(evidence='Inspected actual assertion and check log')
                                                 for row in result['coverage']]
-        for context in (patch('sfc_lib.review_policy.run', side_effect=capabilities),
+        # Protocol replays use fake GitHub/Codex and ordinary temporary Git.
+        # Real process/guardian ownership has separate subprocess acceptance tests.
+        for context in (patch('sfc_lib.lifeline.supported', return_value=False),
+                        patch('sfc_lib.review_policy.run', side_effect=capabilities),
                         patch('sfc_lib.review_policy.native_sessions', return_value=self.root / '.sfc/sessions')):
             context.start(); self.addCleanup(context.stop)
 
@@ -133,12 +152,61 @@ class ChatMergeTests(unittest.TestCase):
             'url': 'https://github.com/example/app/pull/101'}}
         write_json(self.path, record)
 
+    def test_final_query_observes_draft_changes_after_the_last_card_read(self):
+        self.reviewed()
+        original = chat_tracking.verified_card
+        reads = 0
+        def change(*args):
+            nonlocal reads
+            card = original(*args); reads += 1
+            if reads == 3:
+                self.gh.prs[101]['isDraft'] = True
+            return card
+        with patch.object(chat_tracking, 'verified_card', side_effect=change), self.assertRaisesRegex(Halt, 'ready PR'):
+            self.call(apply=True)
+        self.assertEqual(self.gh.attempts, [])
+
+    def test_combined_snapshot_refuses_partial_labels_and_changed_field_meanings(self):
+        original = self.gh.chat_delivery_snapshot
+        for mode in ('partial-labels', 'changed-field'):
+            def change(*args):
+                snapshot = original(*args)
+                if mode == 'partial-labels':
+                    snapshot['issue']['labels']['pageInfo']['hasNextPage'] = True
+                else:
+                    snapshot['routing_field']['options'][0]['name'] = 'changed meaning'
+                return snapshot
+            with self.subTest(mode=mode), patch.object(self.gh, 'chat_delivery_snapshot', side_effect=change), self.assertRaises(Halt):
+                self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+
+    def test_recovered_done_is_pending_if_the_issue_reopens_after_merge_readback(self):
+        self.reviewed(); self.call(apply=True)
+        self.gh.chat_pr = lambda number: self.gh.pr(number)
+        def unknown_note(gh, path, record, event, *args, **kwargs):
+            event['note'] = 'intent'; write_json(path, record)
+            raise Halt('Fixture lost note response')
+        with patch.object(chat_tracking, 'sync_pr_attachment'), patch.object(chat_tracking, 'sync_note', side_effect=unknown_note):
+            self.assertEqual(chat_tracking.sync(self.gh, self.root, self.task)['state'], 'pending')
+        original = chat_merge.merge_observation
+        def reopen(*args):
+            state = original(*args)
+            self.gh.items[0]['state'] = 'OPEN'
+            return state
+        with patch.object(chat_tracking, 'sync_pr_attachment'), patch.object(chat_tracking, 'sync_note') as note, \
+                patch.object(chat_merge, 'merge_observation', side_effect=reopen):
+            result = chat_tracking.sync(self.gh, self.root, self.task)
+            self.assertEqual(result['state'], 'pending')
+            self.assertIn('reopened', result['detail'])
+            note.assert_not_called()
+        self.assertFalse(read_json(self.path)['events'][-1].get('synced'))
+
     def test_commit_message_closures_cannot_exceed_the_tracked_issue(self):
-        for message in ('Fixes #2', 'CLOSES: other/repo#1', 'Resolves https://github.com/example/app/issues/2',
+        for message in ('Fixes #2', 'Fixes:#0002', 'CLOSES: other/repo#1', 'Resolves https://github.com/example/app/issues/2',
                         'Fixes https://github.com/example/app/pull/2#issuecomment-3'):
             with self.subTest(message=message), self.assertRaisesRegex(Halt, 'Commit-message'):
                 chat_merge.commit_closure_scope(message, 'example/app', 1, 'github.com')
-        chat_merge.commit_closure_scope('Fixes #1\0Fixes example/app#1\0Resolve parser bug', 'example/app', 1, 'github.com')
+        chat_merge.commit_closure_scope('Fixes #1\0Fixes example/app#1\0Fix scanner error\n\nRefs #27\0Fix https://docs.python.org/3/library/re.html\0Resolve parser bug', 'example/app', 1, 'github.com')
         git(self.root, 'commit', '--allow-empty', '-m', 'Fixes #2')
         self.head = git(self.root, 'rev-parse', 'HEAD'); git(self.root, 'push', 'origin', 'topic')
         with self.assertRaisesRegex(Halt, 'Commit-message'):

@@ -213,6 +213,9 @@ def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None
         if delivery == 'local-only' and target:
             raise Halt('This task is recorded as local-only; it cannot link a pull request')
         linked = target or bound
+        if (closes_issue and record.get('pr_role') == 'milestone' and
+                record.get('pull_request', {}).get('state') in ('MERGED', 'CLOSED')):
+            raise Halt('A terminal milestone PR cannot become the delivery PR; record a distinct delivery PR')
         if milestone_only and record.get('closes_issue'):
             raise Halt('Preserve the existing closing relationship; it cannot become milestone-only implicitly')
         if milestone_only and not linked:
@@ -525,13 +528,14 @@ def sync(gh, root, task):
                 url = pull['url'] if pull and (event.get('pr') or event.get('pr_url') or
                                                event['stage'] in ('Review', 'Done')) else None
                 card = verified_card(gh, record)
-                if event.get('closing_pr_url') and card['state'] != 'CLOSED':
+                owned = record.get('chat_merge') and record['chat_merge']['state'] != 'not-dispatched'
+                if event['stage'] == 'Done' and (event.get('closing_pr_url') or owned) and card['state'] != 'CLOSED':
                     raise Halt('The tracked issue reopened before Done synced')
                 guard = None
-                if (event['stage'] == 'Done' and record.get('chat_merge') and
-                        record['chat_merge']['state'] != 'not-dispatched'):
+                if event['stage'] == 'Done' and owned:
                     from .chat_merge import completion_guard
                     guard = lambda: completion_guard(root, record, gh)
+                    guard()  # Recovered no-write paths still need a fresh closed/routing check.
                 sync_stage(gh, path, record, card, event, guard=guard)
                 sync_note(gh, path, record, event, url, guard=guard)
                 event['synced'] = now()

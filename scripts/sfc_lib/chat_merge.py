@@ -16,7 +16,7 @@ import threading
 from types import SimpleNamespace
 import uuid
 
-from .common import Halt, PACKAGE, Processes, common_dir, exclusive, git, load_config, now, read_json, run, write_json
+from .common import Halt, PACKAGE, Processes, common_dir, exclusive, git, load_config, now, owned_io, read_json, run, write_json
 from . import chat_tracking as tracking, review_policy
 from .factory import checks_pass, policy_reasons, secret_problem
 from .local_merge import LocalMerge
@@ -41,7 +41,8 @@ def owned_processes(processes):
     try:
         for sig in handlers:
             signal.signal(sig, lambda *_: stopped.set())
-        yield
+        with owned_io(processes.stopped, lifetime=processes.lifetime):
+            yield
         if stopped.is_set():
             raise Stopped('Delivery interrupted; original work and spending preserved')
     finally:
@@ -52,15 +53,24 @@ def owned_processes(processes):
 
 def commit_closure_scope(messages, repository, number, host):
     """Conservatively hand off messages that can close outside this task."""
+    directive = re.compile(r'\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)(?:\s*:\s*|\s+)'
+                           r'(?:(https?://[^\s)>,]+)|((?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#[0-9]+))', re.I)
     for message in messages.split('\0'):
-        if not re.search(r'\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\b', message, re.I):
-            continue
-        urls = re.findall(r'https?://([^/\s]+)/([^/\s]+/[^/\s]+)/(issues|pull)/([1-9][0-9]*)', message, re.I)
-        refs = re.findall(r'(?<![\w/])(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#([1-9][0-9]*)', message)
-        if (any(h.casefold() != host.casefold() or repo.casefold() != repository.casefold() or kind.casefold() != 'issues' or int(n) != number
-                for h, repo, kind, n in urls) or
-                any((repo and repo.casefold() != repository.casefold()) or int(n) != number for repo, n in refs)):
-            raise Halt('Commit-message issue closures exceed the tracked issue scope; maintainer handoff required')
+        for match in directive.finditer(message):
+            url, short = match.groups()
+            if url:
+                target = re.match(r'https?://([^/]+)/([^/]+/[^/]+)/(issues|pull)/([0-9]+)(?=[/?#]|$)',
+                                  url.rstrip('.,;:!?]}'), re.I)
+                if target is None:
+                    continue  # A linked documentation URL is not an issue-closing reference.
+                valid = (target and target[1].casefold() == host.casefold() and
+                         target[2].casefold() == repository.casefold() and target[3].casefold() == 'issues' and
+                         int(target[4]) == number)
+            else:
+                repo, n = short.rsplit('#', 1)
+                valid = (not repo or repo.casefold() == repository.casefold()) and int(n) == number
+            if not valid:
+                raise Halt('Commit-message issue closures exceed the tracked issue scope; maintainer handoff required')
 
 
 def support(gh, config):
@@ -127,7 +137,8 @@ class Delivery:
             raise Halt('Integrate the current base before checking and reviewing this candidate')
 
     def snapshot(self, intent):
-        snapshot = self.gh.local_merge_snapshot(intent['pr'], self.card['number'], intent['base_ref'], intent['head_ref'])
+        snapshot = self.gh.chat_delivery_snapshot(intent['pr'], self.card['number'], intent['base_ref'], intent['head_ref'],
+                                                  self.card['item_id'], self.card['_pickup_scope']['project']['field'])
         pr, issue = self.local.identity(self.card, intent, snapshot)
         if snapshot['id'] != self.c['chat_merge_authority']['repository_id']:
             raise Halt('Reviewed repository identity changed')
@@ -136,9 +147,30 @@ class Delivery:
         if (pr['closingIssuesReferences']['totalCount'] != 1 or
                 [node['id'] for node in pr['closingIssuesReferences']['nodes']] != [self.card['id']]):
             raise Halt('Automatic delivery requires the tracked issue to be the sole closing reference; maintainer handoff required')
+        self.check_policy_snapshot(snapshot)
         self.refs = {'repository': snapshot['id'], 'pr': pr['id'],
                      **{key: snapshot[key]['id'] for key in ('head', 'base')}}
         return snapshot, pr, issue
+
+    def check_policy_snapshot(self, snapshot):
+        from .priority import item_snapshot
+        issue, item, field = snapshot['issue'], snapshot['tracking_item'], snapshot['routing_field']
+        if issue['labels']['pageInfo']['hasNextPage'] or item['fieldValues']['pageInfo']['hasNextPage']:
+            raise Halt('Complete combined policy inventory is unavailable; maintainer handoff required')
+        labels = issue['labels']['nodes']
+        meta = self.card['_pickup_scope']['project']
+        values = item_snapshot(self.gh, self.card['item_id'], first_page=item)
+        keys = ('id', 'number', 'title', 'body', 'url', 'state', 'repository')
+        options = {row['name']: row['id'] for row in field['options']}
+        if (any(issue[k] != self.card[k] or values['content'][k] != issue[k] for k in keys) or
+                len({row['id'] for row in labels}) != len(labels) or
+                not all(row['id'] and row['name'] for row in labels) or
+                sorted(row['name'] for row in labels) != sorted(self.card['labels']) or
+                item['id'] != self.card['item_id'] or item['project']['id'] != meta['id'] or
+                field['id'] != meta['field'] or field['name'] != self.c['status_field'] or
+                len(options) != len(field['options']) or options != meta['options'] or
+                values['values'].get(meta['field']) != options[self.card['status']]):
+            raise Halt('Live issue policy or routing changed during candidate validation')
 
     def candidate(self, *, ready=False, ci=None):
         self.guard()
@@ -182,9 +214,6 @@ class Delivery:
             raise Halt('The applicable PR check candidate changed before dispatch')
         intent.update(repository_id=snapshot['id'], pr_id=live['id'],
                       head_id=snapshot['head']['id'], base_id=snapshot['base']['id'])
-        current = tracking.verified_card(self.gh, self.record)
-        if digest(current) != digest(self.card):
-            raise Halt('Live issue policy or routing changed during candidate validation')
         self.intent = intent
         return intent, pr
 

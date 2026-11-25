@@ -84,6 +84,7 @@ _observer_readback_guard = ContextVar('sfc_observer_readback_guard', default=Non
 # Set only by the bundled STDIO entry point, before it starts any threads. It
 # applies to supervisor git/gh calls as well as worker/check process groups.
 SESSION_LIFELINE = False
+_owned_io = ContextVar("sfc_owned_io", default=None)
 
 
 @contextlib.contextmanager
@@ -106,6 +107,42 @@ def bounded_io(remaining):
         _io_allowance.reset(token)
 
 
+@contextlib.contextmanager
+def owned_io(cancel, *, lifetime=False):
+    token = _owned_io.set((cancel, lifetime))
+    try:
+        yield
+    finally:
+        _owned_io.reset(token)
+
+
+def execute_owned_io(argv, cwd, timeout, input, env, owner):
+    from .lifeline import spawn, terminate
+    cancel, lifetime = owner
+    if cancel():
+        raise Stopped('Delivery IO stopped before launch')
+    process, writer = spawn(argv, enabled=lifetime or SESSION_LIFELINE, cwd=cwd, stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
+                            env={**(os.environ if env is None else env), 'SFC_WORKER': '1'})
+    deadline, first = time.monotonic() + timeout, True
+    try:
+        while True:
+            if cancel():
+                raise Stopped('Delivery IO interrupted; inspect any retained write intent')
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            try:
+                stdout, stderr = process.communicate(input=input if first else None, timeout=min(.1, remaining))
+                return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+            except subprocess.TimeoutExpired:
+                first = False
+    finally:
+        if writer is not None:
+            os.close(writer)
+        terminate(process)
+
+
 def run(argv, cwd=None, *, timeout=120, input=None, check=True, env=None):
     observer = _command_observer.get()
     context = observer(argv, cwd) if observer else contextlib.nullcontext({})
@@ -122,7 +159,10 @@ def _run(argv, cwd=None, *, timeout=120, input=None, check=True, env=None):
     if allowance:
         timeout = min(timeout, allowance())
     try:
-        if SESSION_LIFELINE:
+        owner = _owned_io.get()
+        if owner is not None:
+            result = execute_owned_io(argv, cwd, timeout, input, env, owner)
+        elif SESSION_LIFELINE:
             from .lifeline import spawn, terminate
             process, writer = spawn(argv, enabled=True, cwd=cwd, stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE,
