@@ -35,6 +35,33 @@ def context(cwd):
     return config.parent.parent, json.loads(config.read_text())
 
 
+SEPARATORS = frozenset('();|&')
+
+
+def segments(command):
+    """Simple commands of a shell line, split at ; & && | || and parentheses.
+
+    Redirections (>, 2>&1, &>) contain < or > and stay inside their command,
+    so they never end a segment early. Unparseable input yields one segment of
+    the whole line, keeping the older conservative behavior.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+    lexer.whitespace_split = True
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return [shlex.split(command)]
+    result, current = [], []
+    for token in tokens:
+        if token and set(token) <= SEPARATORS:
+            result.append(current)
+            current = []
+        else:
+            current.append(token)
+    result.append(current)
+    return [part for part in result if part]
+
+
 def sensitive(path):
     return secret_problem([path], "") is not None
 
@@ -84,9 +111,13 @@ def check(event, root, config, *, chat=False):
     for token in tokens:
         if sensitive(token) and not token.startswith("-"):
             return "Credential path access blocked; use project-owned key-name checks"
-    if "git" in tokens and "push" in tokens:
-        at = tokens.index("push")
-        args = tokens[at + 1:]
+    # Each simple command is checked on its own: words of a chained command
+    # (for example `gh pr create --base main`) are not push arguments.
+    # Parentheses or operators without spaces hide words from shlex.split.
+    for part in (segments(command) if "push" in command else ()):
+        if "git" not in part or "push" not in part:
+            continue
+        args = part[part.index("push") + 1:]
         base = config["base_branch"]
         if any(v in ("--force", "--force-with-lease", "--mirror", "--all", "-f") for v in args):
             return "Force or broad Git push blocked"
