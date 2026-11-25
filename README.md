@@ -30,7 +30,7 @@ flowchart LR
     C -.-> D
 ```
 
-SFC **0.2.2** is available as a local Codex plugin.
+SFC **0.2.3** is available as a local Codex plugin.
 
 ## Install in one command
 
@@ -40,7 +40,7 @@ the bundled Codex installer. You can [read the installer](scripts/install_releas
 before running it. Stop any active SFC watcher before upgrading.
 
 ```bash
-curl -fsSLo sfc-install.py https://raw.githubusercontent.com/fhajjej-ship-it/sfc-codex/v0.2.2/scripts/install_release.py && python3 sfc-install.py --version 0.2.2
+curl -fsSLo sfc-install.py https://raw.githubusercontent.com/fhajjej-ship-it/sfc-codex/v0.2.3/scripts/install_release.py && python3 sfc-install.py --version 0.2.3
 ```
 
 Reopen Codex after installation and review the SFC hooks in `/hooks`. Start with
@@ -66,14 +66,14 @@ to your repository and Project.
 3. Ask Codex to fix a bug or build a feature in the project chat. SFC links the
    issue and shows actual progress as the chat works.
 
-**Manual installation.** Download `sfc-0.2.2.zip` and
-`sfc-0.2.2.zip.sha256` from the
+**Manual installation.** Download `sfc-0.2.3.zip` and
+`sfc-0.2.3.zip.sha256` from the
 [release assets](https://github.com/fhajjej-ship-it/sfc-codex/releases/latest).
 In the download directory, run:
 
 ```sh
-shasum -a 256 -c sfc-0.2.2.zip.sha256
-unzip sfc-0.2.2.zip
+shasum -a 256 -c sfc-0.2.3.zip.sha256
+unzip sfc-0.2.3.zip
 cd sfc
 python3 scripts/install_codex_plugin.py
 ```
@@ -87,7 +87,7 @@ this source; there is no Claude release asset yet. From a checkout:
 
 ```sh
 python3 scripts/package_plugin.py --claude
-claude plugin marketplace add "$PWD/dist/sfc-0.2.2-claude"
+claude plugin marketplace add "$PWD/dist/sfc-0.2.3-claude"
 claude plugin install sfc@sfc-marketplace
 ```
 

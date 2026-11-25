@@ -1,6 +1,6 @@
 {
   "name": "sfc",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Track work done in Claude Code chats on a GitHub Project: tickets, checks, reviews, pull requests and verified completion.",
   "author": {
     "name": "Farouk Hajjej"
