@@ -457,6 +457,27 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual((self.gh.comments, self.gh.writes), (notes, writes))
         self.assertEqual(self.gh.native_writes, [])
 
+    def test_inferred_attachment_initial_read_failure_retries_after_done_without_replaying_milestones(self):
+        self.start()
+        self.update('reviewed', 'Review')
+        self.sync()
+        pr = self.set_cross_repo_closure()
+        with patch.object(self.gh, 'chat_pr_attachment', side_effect=Halt('Fixture read failed')):
+            result = self.sync()
+        self.assertEqual((result['state'], result['board_stage']), ('synced', 'Done'))
+        self.assertEqual(result['native_pr_attachment']['state'], 'pending')
+        self.gh.pull = pr
+        notes, writes = self.gh.comments.copy(), self.gh.writes.copy()
+        links = self.gh.closing_links
+        self.gh.closing_links = {'totalCount': 0, 'nodes': []}
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
+        self.assertEqual(self.gh.native_writes, [])
+        self.gh.closing_links = links
+        result = self.sync()
+        self.assertEqual((result['state'], result['board_stage']), ('synced', 'Done'))
+        self.assertEqual(result['native_pr_attachment']['state'], 'verified')
+        self.assertEqual((self.gh.comments, self.gh.writes), (notes, writes))
+
     def test_unverified_closures_preserve_review(self):
         self.start()
         self.update('reviewed', 'Review')

@@ -292,7 +292,7 @@ def observe_closing_pr(gh, record):
     return observe_pr(pr, number, record['scope']['base_branch'], repository)
 
 
-def sync_stage(gh, path, record, card, event):
+def sync_stage(gh, path, record, card, event, *, guard=None):
     stage = event['stage']
     current = card['status']
     if current == 'Done' and card['state'] == 'CLOSED' and stage != 'Done':
@@ -301,6 +301,8 @@ def sync_stage(gh, path, record, card, event):
     if current not in (record['board_stage'], stage):
         raise Halt('The Project status changed outside chat tracking')
     if current != stage:
+        if guard:
+            guard()
         gh.move(card, stage)
         card = verified_card(gh, record)
         if card['status'] != stage:
@@ -313,12 +315,14 @@ def sync_stage(gh, path, record, card, event):
             field, current = standard
             done = field['options']['Done']
             if current != done:
+                if guard:
+                    guard()
                 gh.write_done_status(field)
                 if gh.done_status_snapshot(card) != (field, done):
                     raise Halt('GitHub Status Done could not be verified')
 
 
-def sync_note(gh, path, record, event, pr_url):
+def sync_note(gh, path, record, event, pr_url, *, guard=None):
     if not event['summary'] or event.get('note') == 'verified':
         return
     endpoint = f"repos/{gh.c['repo']}/issues/{record['issue']['number']}/comments"
@@ -333,6 +337,8 @@ def sync_note(gh, path, record, event, pr_url):
     else:
         event['note'] = 'intent'
         write_json(path, record)
+        if guard:
+            guard()
         result = gh.call('api', endpoint, '--method', 'POST', '--input', '-', input=json.dumps({'body': body}))
         if not result.get('id') or result.get('body') != body:
             raise Halt('The milestone note response did not match')
@@ -340,7 +346,7 @@ def sync_note(gh, path, record, event, pr_url):
     write_json(path, record)
 
 
-def sync_pr_attachment(gh, path, record, target):
+def sync_pr_attachment(gh, path, record, target, *, expected=False):
     repository, number = target
     observed = gh.chat_pr_attachment(record['issue'], repository, number)
     binding = {key: observed[key] for key in ('issue', 'pull_request', 'url', 'base')}
@@ -351,6 +357,8 @@ def sync_pr_attachment(gh, path, record, target):
     if previous and not linked:
         raise Halt('Native PR attachment needs readback or was removed; the write will not be repeated')
     if not linked and not record.get('closes_issue'):
+        if expected:
+            raise Halt('The inferred closing attachment is missing; preserve the unlink and inspect its readback')
         return  # A milestone PR alone does not authorize automatic issue closure.
     if not linked:
         if len(observed['references']) >= 10:
@@ -384,8 +392,10 @@ def sync(gh, root, task):
         target = pr_target(gh.c['repo'], number, pr_url)
         latest = record['events'][-1]
         completed = latest['stage'] == 'Done' and latest.get('synced')
-        if completed and target is None and record.get('native_pr_attachment'):
-            target = pr_target(gh.c['repo'], None, record['native_pr_attachment']['binding']['url'])
+        if completed and target is None:
+            saved_url = (record.get('native_pr_attachment') or {}).get('binding', {}).get('url') or latest.get('closing_pr_url')
+            if saved_url:
+                target = pr_target(gh.c['repo'], None, saved_url)
         follow_pr = target is not None and latest['stage'] != 'Done'
         pending = any(not event.get('synced') for event in record['events'])
         attachment_pending = bool(record.get('native_pr_attachment_error') or
@@ -415,7 +425,8 @@ def sync(gh, root, task):
                 record['pull_request'] = pull
                 attachment_target = target or pr_target(gh.c['repo'], None, pull['url'])
                 try:
-                    sync_pr_attachment(gh, path, record, attachment_target)
+                    sync_pr_attachment(gh, path, record, attachment_target,
+                                       expected=bool(follow_closure or latest.get('closing_pr_url')))
                 except (Halt, OSError, ValueError, KeyError) as exc:
                     # Link writes retain their own intent. Independently
                     # verified milestone and merge observations can still sync.
@@ -423,6 +434,12 @@ def sync(gh, root, task):
                     write_json(path, record)
                 else:
                     record.pop('native_pr_attachment_error', None)
+                if pull['state'] == 'MERGED' and record.get('chat_merge') and not completed:
+                    from .chat_merge import confirmed
+                    if not confirmed(gh, root, record):
+                        raise Halt('Retained atomic intent does not confirm this merged candidate; maintainer handoff required')
+                    record['chat_merge']['state'] = 'confirmed'
+                    write_json(path, record)
                 if latest['stage'] != 'Done' and pull['state'] == 'MERGED':
                     # Save the completion event before writing either status field.
                     completion = {'id': 'sfc:pr-merged', 'stage': 'Done', 'pr': number,
@@ -442,8 +459,12 @@ def sync(gh, root, task):
                 card = verified_card(gh, record)
                 if event.get('closing_pr_url') and card['state'] != 'CLOSED':
                     raise Halt('The tracked issue reopened before Done synced')
-                sync_stage(gh, path, record, card, event)
-                sync_note(gh, path, record, event, url)
+                guard = None
+                if event['stage'] == 'Done' and record.get('chat_merge'):
+                    from .chat_merge import completion_guard
+                    guard = lambda: completion_guard(root, record)
+                sync_stage(gh, path, record, card, event, guard=guard)
+                sync_note(gh, path, record, event, url, guard=guard)
                 event['synced'] = now()
                 write_json(path, record)
         except (Halt, OSError, ValueError, KeyError) as exc:

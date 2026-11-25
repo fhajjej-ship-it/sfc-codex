@@ -100,6 +100,36 @@ class ChatMergeTests(unittest.TestCase):
         self.assertEqual(self.call()['state'], 'qualified')
         chat_tracking.update(self.root, self.c, task=self.task, event_id='review', stage='Review', summary='Independent pass')
         self.gh.items[0]['status'] = 'Review'
+        # Seed the fake board's verified Review/attachment checkpoint.
+        record = read_json(self.path)
+        for event in record['events']:
+            event['synced'] = 'fixture-checkpoint'
+        record['native_pr_attachment'] = {'state': 'verified', 'binding': {
+            'issue': self.gh.items[0]['id'], 'pull_request': 'pr-node-101', 'base': 'main',
+            'url': 'https://github.com/example/app/pull/101'}}
+        write_json(self.path, record)
+
+    def test_a_second_preparation_on_identical_inputs_keeps_the_selected_original_proof(self):
+        normal = self.processes.mutate
+        self.processes.mutate = lambda result: result.update(coverage=[])
+        with self.assertRaises(Halt):
+            self.call()
+        self.processes.mutate = normal
+        self.reviewed()
+        self.call(apply=True)
+        self.assertEqual(self.call(apply=True)['state'], 'merged')
+        record = read_json(self.path)
+        self.assertEqual(len(record['delivery_attempts']), 2)
+        self.assertEqual(record['chat_merge']['preparation_id'], record['delivery_attempts'][1]['intent']['id'])
+
+    def test_uncertain_tracking_write_requires_its_own_readback_before_merge(self):
+        self.reviewed()
+        record = read_json(self.path)
+        record['events'][-1].pop('synced')
+        write_json(self.path, record)
+        with self.assertRaisesRegex(Halt, 'Sync pending'):
+            self.call(apply=True)
+        self.assertEqual(self.gh.attempts, [])
 
     def test_checks_native_review_and_both_refs_gate_the_only_merge_write(self):
         self.reviewed()
@@ -120,6 +150,73 @@ class ChatMergeTests(unittest.TestCase):
         self.assertEqual(self.call(apply=True)['state'], 'merged')
         self.assertEqual(self.processes.events, events)
         self.assertEqual(len(self.gh.attempts), 1)
+
+    def test_final_ci_change_or_stop_at_readback_prevents_dispatch(self):
+        self.reviewed()
+        reads = 0
+        def changed(head):
+            nonlocal reads
+            reads += 1
+            return [{'status': 'COMPLETED', 'conclusion': 'SUCCESS' if reads == 1 else 'FAILURE'}]
+        with patch.object(self.gh, 'local_merge_checks', side_effect=changed), self.assertRaisesRegex(Halt, 'GitHub checks'):
+            self.call(apply=True)
+        self.assertEqual(self.gh.attempts, [])
+        self.assertIn('chat_merge', read_json(self.path))
+        self.gh.prs[101].update(state='MERGED', mergeCommit={'oid': self.head})
+        git(self.remote, 'update-ref', 'refs/heads/main', self.head)
+        self.gh.items[0]['state'] = 'CLOSED'
+        self.assertEqual(self.call(apply=True)['state'], 'uncertain')
+
+    def test_stop_during_final_github_read_keeps_intent_without_dispatch(self):
+        self.reviewed()
+        reads = 0
+        def stop(head):
+            nonlocal reads
+            reads += 1
+            if reads > 1:
+                (common_dir(self.root) / 'sfc-stop').touch()
+            return [{'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]
+        with patch.object(self.gh, 'local_merge_checks', side_effect=stop), self.assertRaisesRegex(Halt, 'stopped'):
+            self.call(apply=True)
+        self.assertEqual(self.gh.attempts, [])
+        self.assertIn('chat_merge', read_json(self.path))
+
+    def test_live_issue_criteria_are_required_even_when_the_chat_saved_a_subset(self):
+        self.gh.items[0]['body'] += '- A newly added live obligation\n'
+        self.assertEqual(self.call()['state'], 'qualified')
+        coverage = read_json(self.path)['delivery_attempts'][0]['result']['coverage']
+        self.assertEqual([row['criterion'] for row in coverage], ['The value is fixed', 'A newly added live obligation'])
+
+    def test_merge_readback_accepts_a_verified_descendant_without_another_write(self):
+        self.reviewed(); self.call(apply=True)
+        descendant = git(self.root, 'commit-tree', self.head + '^{tree}', '-p', self.head, '-m', 'Next change')
+        git(self.root, 'push', 'origin', descendant + ':refs/heads/next')
+        git(self.remote, 'update-ref', 'refs/heads/main', descendant)
+        self.assertEqual(self.call(apply=True)['state'], 'merged')
+        self.assertEqual(len(self.gh.attempts), 1)
+
+    def test_sync_cannot_complete_a_different_merge_after_an_uncertain_owned_intent(self):
+        self.reviewed()
+        self.gh.before_write = lambda intent: (_ for _ in ()).throw(Halt('Fixture rejected write'))
+        with self.assertRaises(Halt):
+            self.call(apply=True)
+        self.gh.prs[101].update(state='MERGED', mergeCommit={'oid': self.base})
+        self.gh.chat_pr = lambda number: self.gh.pr(number)
+        with patch.object(chat_tracking, 'sync_pr_attachment'):
+            result = chat_tracking.sync(self.gh, self.root, self.task)
+        self.assertEqual(result['state'], 'pending')
+        self.assertEqual(self.gh.items[0]['status'], 'Review')
+        self.assertNotIn((1, 'Done'), self.gh.writes)
+
+    def test_stop_preserves_a_landed_intent_without_publishing_done(self):
+        self.reviewed(); self.call(apply=True)
+        (common_dir(self.root) / 'sfc-stop').touch()
+        self.gh.chat_pr = lambda number: self.gh.pr(number)
+        with patch.object(chat_tracking, 'sync_pr_attachment'):
+            result = chat_tracking.sync(self.gh, self.root, self.task)
+        self.assertEqual(result['state'], 'pending')
+        self.assertEqual(self.gh.items[0]['status'], 'Review')
+        self.assertNotIn((1, 'Done'), self.gh.writes)
 
     def test_changed_base_in_the_final_race_latches_intent_without_a_second_write(self):
         self.reviewed()
@@ -223,3 +320,6 @@ class ChatMergeTests(unittest.TestCase):
         self.gh.rules = 1
         self.assertFalse(chat_merge.support(self.gh, self.c)['available'])
         self.assertEqual(self.gh.rules, 1)
+        missing = chat_merge.support(self.gh, {**self.c, 'verify_commands': []})
+        self.assertFalse(missing['available'])
+        self.assertIn('--verify', missing['reason'])
