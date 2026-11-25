@@ -62,6 +62,48 @@ def segments(command):
     return [part for part in result if part]
 
 
+HEREDOC = re.compile(r"(?<!<)<<(?!<)(-?)\s*\\?(['\"]?)([^\s'\"<>|&;()]+)\2")
+
+
+def split_heredocs(command):
+    """Command lines and heredoc bodies of a shell script, kept apart.
+
+    Bodies are data or, when fed to a shell, code; either way they are not
+    part of the command line's quoting. Each `<<WORD`, `<<'WORD'`, `<<"WORD"`
+    or `<<-WORD` on a line takes the following lines up to its delimiter
+    (tab-indented for `<<-`). Here-strings (`<<<`) are not heredocs. An
+    unterminated body runs to the end, as in the shell.
+    """
+    lines = command.split("\n")
+    kept, bodies, index = [], [], 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        kept.append(line)
+        for match in HEREDOC.finditer(line):
+            dash, delimiter, body = match.group(1) == "-", match.group(3), []
+            while index < len(lines):
+                current = lines[index]
+                index += 1
+                if (current.lstrip("\t") if dash else current) == delimiter:
+                    break
+                body.append(current)
+            bodies.append(body)
+    return "\n".join(kept), bodies
+
+
+def parse(text, *, strict):
+    """Words and simple commands; None when strict text cannot be parsed."""
+    try:
+        return shlex.split(text), (segments(text) if "push" in text else [])
+    except ValueError:
+        if strict:
+            return None
+        # A heredoc line is free text: an apostrophe must not hide its words.
+        words = text.split()
+        return words, [words]
+
+
 def sensitive(path):
     return secret_problem([path], "") is not None
 
@@ -104,17 +146,26 @@ def check(event, root, config, *, chat=False):
         return secret_problem([], command)
     if tool not in ("Bash", "exec_command", "functions.exec_command"):
         return None
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
+    text, bodies = split_heredocs(command)
+    parsed = parse(text, strict=True)
+    if parsed is None:
         return "Cannot parse shell command for SFC literal guards"
+    # Heredoc bodies stay checked (a body fed to sh is code), one line at a time.
+    for tokens, parts in [parsed, *(parse(line, strict=False) for body in bodies for line in body)]:
+        reason = check_words(tokens, parts, root, config, cwd, chat=chat)
+        if reason:
+            return reason
+    return None
+
+
+def check_words(tokens, parts, root, config, cwd, *, chat=False):
     for token in tokens:
         if sensitive(token) and not token.startswith("-"):
             return "Credential path access blocked; use project-owned key-name checks"
     # Each simple command is checked on its own: words of a chained command
     # (for example `gh pr create --base main`) are not push arguments.
     # Parentheses or operators without spaces hide words from shlex.split.
-    for part in (segments(command) if "push" in command else ()):
+    for part in parts:
         if "git" not in part or "push" not in part:
             continue
         args = part[part.index("push") + 1:]

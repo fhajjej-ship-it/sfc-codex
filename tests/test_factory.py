@@ -1288,6 +1288,31 @@ class HookTests(unittest.TestCase):
         self.assertEqual(self.guard.segments("git push 2>&1 origin main"),
                          [["git", "push", "2", ">&", "1", "origin", "main"]])
 
+    def test_heredoc_bodies_are_checked_without_parsing_as_shell(self):
+        allowed = ["git commit -F - <<'EOF'\nFix the guard's push check\n\nIt's \"quoted\" text.\nEOF",
+                   "cat > notes.md <<EOF\nDon't run it yet\nEOF\ngit push origin feature",
+                   "cat <<-'END'\n\tit's indented\n\tEND\necho done",
+                   "gh pr create --base main --body-file - <<'EOF'\nThe guard's fix; see `main`.\nEOF",
+                   "cat <<< \"here-string\" && echo ok"]
+        for command in allowed:
+            with self.subTest(command=command):
+                self.assertIsNone(self.check_command(command))
+        blocked = ["bash <<'EOF'\necho it's fine\ngit push origin main\nEOF",
+                   "sh <<EOF\ngit push --force origin feature\nEOF",
+                   "bash <<'EOF'\ncat .env.local\nEOF",
+                   "cat <<EOF\nit's data\nEOF\ngit push origin main",
+                   "cat <<A <<B\nfirst\nA\ngit push\nB",
+                   "bash <<EOF\nrm -rf ../other\nEOF"]
+        for command in blocked:
+            with self.subTest(command=command):
+                self.assertIsNotNone(self.check_command(command))
+        self.assertEqual(self.check_command("echo 'unbalanced && git push origin feature"),
+                         "Cannot parse shell command for SFC literal guards")
+        self.assertEqual(self.check_command("cat <<EOF\nbody\nEOF\necho 'unbalanced"),
+                         "Cannot parse shell command for SFC literal guards")
+        self.assertEqual(self.guard.split_heredocs("cat <<-'END' >x <<B\n\tit's\n\tEND\nb\nB\necho done"),
+                         ("cat <<-'END' >x <<B\necho done", [["\tit's"], ["b"]]))
+
     def test_apply_patch_cannot_escape_worktree(self):
         self.assertIsNotNone(self.guard.check({"tool_name": "apply_patch", "cwd": "/tmp/project",
             "tool_input": {"command": "*** Begin Patch\n*** Add File: ../escape.txt\n+bad\n*** End Patch"}}, Path("/tmp/project"), BASE_CONFIG))
