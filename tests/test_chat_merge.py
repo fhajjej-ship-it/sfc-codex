@@ -164,6 +164,34 @@ class ChatMergeTests(unittest.TestCase):
             self.call()
         self.assertNotIn('delivery_attempts', read_json(self.path))
 
+    def test_historical_nonascii_credential_paths_are_not_git_display_strings(self):
+        path = self.root / 'café' / 'id_rsa'
+        path.parent.mkdir(); path.write_text('fixture credential file')
+        git(self.root, 'add', 'café/id_rsa'); git(self.root, 'commit', '-m', 'Transient unicode credential path')
+        git(self.root, 'rm', 'café/id_rsa'); git(self.root, 'commit', '-m', 'Remove transient credential path')
+        self.head = git(self.root, 'rev-parse', 'HEAD')
+        git(self.root, 'push', 'origin', 'topic')
+        with self.assertRaisesRegex(Halt, 'sensitive credential file'):
+            self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+
+    def test_historical_binary_content_requires_handoff_even_when_removed(self):
+        path = self.root / 'payload.bin'; path.write_bytes(b'\x00' + b'fixture binary data')
+        git(self.root, 'add', 'payload.bin'); git(self.root, 'commit', '-m', 'Transient binary')
+        git(self.root, 'rm', 'payload.bin'); git(self.root, 'commit', '-m', 'Remove transient binary')
+        self.head = git(self.root, 'rev-parse', 'HEAD')
+        git(self.root, 'push', 'origin', 'topic')
+        with self.assertRaisesRegex(Halt, 'Binary changes in published history'):
+            self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+
+    def test_completion_guard_preserves_a_manual_routing_change_it_observes(self):
+        self.reviewed(); self.call(apply=True)
+        self.gh.items[0]['status'] = 'Blocked'
+        with self.assertRaisesRegex(Halt, 'routing changed'):
+            chat_merge.completion_guard(self.root, read_json(self.path), self.gh)
+        self.assertNotIn((1, 'Done'), self.gh.writes)
+
     def test_live_policy_change_during_final_snapshot_prevents_dispatch(self):
         self.reviewed()
         reads = 0

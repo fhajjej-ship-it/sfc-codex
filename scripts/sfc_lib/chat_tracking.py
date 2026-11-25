@@ -294,6 +294,23 @@ def observe_closing_pr(gh, record):
     return observe_pr(pr, number, record['scope']['base_branch'], repository)
 
 
+def guarded_done_write(path, record, event, key, binding, send, guard):
+    """A persisted Done intent is readback-only until observed or known unsent."""
+    previous = event.get(key)
+    if previous and (previous['binding'] != binding or previous['state'] != 'unsent'):
+        raise Halt('A Done field write needs readback; the original write will not be repeated')
+    event[key] = {'state': 'intent', 'binding': binding}
+    write_json(path, record)
+    try:
+        if guard:
+            guard()
+    except BaseException:
+        event[key]['state'] = 'unsent'
+        write_json(path, record)
+        raise
+    send()  # Unknown results keep their original intent.
+
+
 def sync_stage(gh, path, record, card, event, *, guard=None):
     stage = event['stage']
     current = card['status']
@@ -302,26 +319,41 @@ def sync_stage(gh, path, record, card, event, *, guard=None):
         return
     if current not in (record['board_stage'], stage):
         raise Halt('The Project status changed outside chat tracking')
+    if stage == 'Done' and event.get('routing_write') and event['routing_write']['binding'] != {'item': card['item_id'], 'target': stage}:
+        raise Halt('The Done routing identity changed before readback')
     if current != stage:
-        if guard:
-            guard()
-        gh.move(card, stage)
+        if stage == 'Done':
+            guarded_done_write(path, record, event, 'routing_write', {'item': card['item_id'], 'target': stage},
+                               lambda: gh.move(card, stage), guard)
+        else:
+            if guard:
+                guard()
+            gh.move(card, stage)
         card = verified_card(gh, record)
         if card['status'] != stage:
             raise Halt('The Project status update could not be verified')
+    if stage == 'Done' and event.get('routing_write'):
+        event['routing_write']['state'] = 'verified'
     record['board_stage'] = stage
     write_json(path, record)
     if stage == 'Done':
         standard = gh.done_status_snapshot(card)
+        if standard is None and event.get('status_write'):
+            raise Halt('The pending Done field is unavailable; preserve its original intent')
         if standard is not None:
             field, current = standard
             done = field['options']['Done']
+            previous = event.get('status_write')
+            if previous and previous['binding'] != field:
+                raise Halt('The Done field identity changed before readback')
             if current != done:
-                if guard:
-                    guard()
-                gh.write_done_status(field)
+                guarded_done_write(path, record, event, 'status_write', field,
+                                   lambda: gh.write_done_status(field), guard)
                 if gh.done_status_snapshot(card) != (field, done):
                     raise Halt('GitHub Status Done could not be verified')
+            if event.get('status_write'):
+                event['status_write']['state'] = 'verified'
+                write_json(path, record)
 
 
 def sync_note(gh, path, record, event, pr_url, *, guard=None):

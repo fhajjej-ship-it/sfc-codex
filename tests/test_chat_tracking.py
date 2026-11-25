@@ -112,6 +112,37 @@ class ChatTrackingTests(unittest.TestCase):
     def sync(self):
         return chat_tracking.sync(self.gh, self.root, self.task)
 
+    def test_uncertain_routing_done_is_readback_only_with_delayed_visibility(self):
+        self.uncertain_done_field('routing')
+
+    def test_uncertain_standard_done_is_readback_only_with_delayed_visibility(self):
+        self.uncertain_done_field('standard')
+
+    def uncertain_done_field(self, field):
+        self.task = 'uncertain-done-' + field
+        self.gh.items[0]['status'] = 'Backlog'
+        self.gh.github_status['item-1'] = 'in-progress'
+        self.gh.pull['state'] = 'OPEN'
+        self.start(); self.update('review', 'Review', pr=41); self.sync()
+        self.gh.pull['state'] = 'MERGED'
+        attempts = []
+        def unknown(*args):
+            attempts.append(args)
+            raise Halt('Fixture lost field response; readback still shows old value')
+        with patch.object(self.gh, 'move' if field == 'routing' else 'write_done_status', side_effect=unknown):
+            self.assertEqual(self.sync()['state'], 'pending')
+            second = self.sync()
+            self.assertEqual(second['state'], 'pending')
+            self.assertIn('readback', second['detail'])
+        self.assertEqual(len(attempts), 1)
+        if field == 'routing':
+            self.gh.items[0]['status'] = 'Done'
+        else:
+            self.gh.github_status['item-1'] = 'done'
+        self.assertEqual(self.sync()['state'], 'synced')
+        self.assertEqual(self.gh.github_status['item-1'], 'done')
+
+
     def test_guard_rejected_unsent_note_can_retry_but_unknown_post_is_readback_only(self):
         self.start()
         path = chat_tracking.task_path(self.root, self.task)
@@ -536,6 +567,8 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.sync()['state'], 'pending')
         self.assertEqual(self.gh.github_status['item-1'], 'in-progress')
         self.gh.closer = {'id': pr['id']}
+        self.assertEqual(self.sync()['state'], 'pending')  # An unknown field write is never replayed.
+        self.gh.github_status['item-1'] = 'done'  # Eventual readback confirms the original intent.
         self.assertEqual(self.sync()['state'], 'synced')
         self.assertEqual(self.gh.github_status['item-1'], 'done')
         self.assertEqual(self.gh.writes.count((1, 'Done')), 1)

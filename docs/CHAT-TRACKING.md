@@ -120,7 +120,8 @@ tracking; its original proof and spending stay intact. Unknown writes still
 require owned-candidate readback. A verified landing with an open issue reports
 an issue-closure handoff and remains short of Done. Merge authority always comes
 from the primary checkout. Gates inspect every newly reachable commit for
-sensitive paths and credentials, and revalidate execution receipts, write
+sensitive paths and credentials using raw paths; unscanned historical binaries
+require a handoff. Gates revalidate execution receipts, write
 capability and live issue policy before dispatch.
 Existing configurations and custom review requirements are not migrated.
 This provider requires same-repository PRs whose sole closing issue is the tracked task, reviewed identity-bound
@@ -152,7 +153,9 @@ Run sync at a chat checkpoint to reflect changes made on GitHub.
 Sync Building before editing and sync later milestones as they happen.
 Continue working during GitHub outages.
 `track status --task ID` shows pending milestones, and `track sync --task ID`
-retries them. Codex can show the linked issue and latest recorded milestone
+reconciles them. Done-field intents require readback after an unknown response,
+including when the old value is still visible; sync never blindly resends them.
+Codex can show the linked issue and latest recorded milestone
 in chat alongside the last verified board stage. Lost write responses require
 readback before reconciliation.
 The tracker changes Project fields and appends milestone notes. It grants

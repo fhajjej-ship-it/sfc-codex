@@ -111,7 +111,10 @@ class Delivery:
                     raise Halt('Binary changes require a maintainer handoff')
                 lines += int(a) + int(d)
         history = ['git', 'log', '--format=', '--no-renames', '--diff-merges=separate']
-        history_paths = run([*history, '--name-only', self.base + '..' + self.head], self.wt).stdout.splitlines()
+        history_paths = run([*history, '--name-only', '-z', self.base + '..' + self.head], self.wt).stdout.split('\0')
+        history_stats = run([*history, '--numstat', '-z', self.base + '..' + self.head], self.wt).stdout
+        if any(row.split('\t', 2)[:2] == ['-', '-'] for row in history_stats.split('\0') if row):
+            raise Halt('Binary changes in published history require a maintainer handoff')
         history_patch = run([*history, '-p', '--no-ext-diff', '--no-textconv', self.base + '..' + self.head], self.wt).stdout
         problems = policy_reasons(self.c, self.card, {**pr, 'additions': max(lines, pr['additions'] + pr['deletions']),
                                                     'deletions': 0, 'files': pr['files'] + [{'path': p} for p in paths + history_paths if p]})
@@ -420,6 +423,8 @@ def confirmed(gh, root, record):
 def completion_guard(root, record, gh=None):
     if gh is not None:
         card = tracking.verified_card(gh, record)
+        if card['status'] not in (record['board_stage'], 'Done'):
+            raise Halt('Project routing changed before Done; preserve the manual change')
         if card['state'] != 'CLOSED' or record['chat_merge']['binding']['task'] != digest(
                 {k: card[k] for k in ('id', 'item_id', 'number', 'title', 'body', 'labels')}):
             raise Halt('The tracked issue reopened or changed before Done')
