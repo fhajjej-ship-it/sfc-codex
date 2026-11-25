@@ -153,5 +153,19 @@ class ClaudePackagingTests(unittest.TestCase):
                 self.assertNotIn('/agents/openai.yaml', name)
 
 
+    def test_archive_and_checksum_keep_the_full_version_name(self):
+        sys.path.insert(0, str(ROOT / 'scripts'))
+        from package_plugin import build_claude
+        with tempfile.TemporaryDirectory() as dist:
+            result = build_claude(dist, '0.2.2', {'README.md': b'fixture\n'})
+            names = sorted(p.name for p in Path(dist).iterdir())
+            self.assertEqual(names, ['sfc-0.2.2-claude', 'sfc-0.2.2-claude.zip', 'sfc-0.2.2-claude.zip.sha256'])
+            self.assertEqual(Path(result['archive']).name, 'sfc-0.2.2-claude.zip')
+            self.assertTrue(Path(dist, 'sfc-0.2.2-claude.zip.sha256').read_text().endswith('  sfc-0.2.2-claude.zip\n'))
+            self.assertEqual(Path(result['directory'], 'README.md').read_bytes(), b'fixture\n')
+            with self.assertRaises(FileExistsError):
+                build_claude(dist, '0.2.2', {'README.md': b'other\n'})
+
+
 if __name__ == '__main__':
     unittest.main()
