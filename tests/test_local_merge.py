@@ -773,13 +773,15 @@ class MergeOnboardingTests(unittest.TestCase):
         self.assertFalse((common_dir(self.root) / "sfc-watch.json").exists())
         self.assertEqual(self.proc.lanes, [])
 
-    def test_onboarding_help_describes_chat_and_manual_merging(self):
+    def test_onboarding_help_describes_automatic_delivery_and_human_choice(self):
         output = io.StringIO()
         with redirect_stdout(output), self.assertRaises(SystemExit) as exit:
             sfc.main(["onboard", "--help"])
         self.assertEqual(exit.exception.code, 0)
         help_text = " ".join(output.getvalue().split())
-        self.assertIn("chat tracking leaves merging to you", help_text)
+        self.assertIn("automatic delivery by default", help_text)
+        self.assertIn("human keeps an explicit merge gate", help_text)
+        self.assertIn("--allow-merge", help_text)
         self.assertNotIn("--auto-start", help_text)
 
     def test_cli_explicit_human_policy_is_saved_and_blocks_authorized_auto_merge(self):
