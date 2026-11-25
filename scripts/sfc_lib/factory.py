@@ -108,7 +108,15 @@ def secret_problem(paths, diff):
         name = Path(path).name
         if (name.startswith(".env") and not name.endswith((".example", ".sample", ".template"))) or name in ("id_rsa", "id_ed25519") or name.endswith((".pem", ".p12", ".pfx")):
             return "sensitive credential file: " + path
-    added = "\n".join(line[1:] for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++"))
+    additions, in_hunk = [], False
+    for line in diff.splitlines():
+        if line.startswith('diff '):
+            in_hunk = False
+        elif line.startswith('@@'):
+            in_hunk = True
+        elif line.startswith('+') and (in_hunk or not line.startswith('+++ ')):
+            additions.append(line[1:])
+    added = "\n".join(additions)
     if re.search(r"(?:sk-(?:proj-)?[A-Za-z0-9_-]{24,}|gh[pousr]_[A-Za-z0-9]{25,}|AKIA[A-Z0-9]{16}|-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----)", added):
         return "live-looking credential in added content"
     return None

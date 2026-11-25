@@ -251,6 +251,14 @@ class ChatMergeTests(unittest.TestCase):
             self.call()
         self.assertNotIn('delivery_attempts', read_json(self.path))
 
+    def test_completion_rejects_modified_ancestry_before_done(self):
+        self.reviewed(); self.call(apply=True)
+        replacement = git(self.root, 'commit-tree', self.base + '^{tree}', '-m', 'Replacement')
+        git(self.root, 'replace', self.base, replacement)
+        with self.assertRaisesRegex(Halt, 'complete unmodified Git history'):
+            chat_merge.merge_observation(self.gh, self.root, read_json(self.path))
+        self.assertEqual(len(self.gh.attempts), 1)
+
     def test_newer_failing_applicable_head_rollup_prevents_dispatch(self):
         self.reviewed()
         original = self.gh.chat_delivery_snapshot
@@ -287,7 +295,7 @@ class ChatMergeTests(unittest.TestCase):
     def test_color_config_cannot_hide_transient_credential_content(self):
         git(self.root, 'config', 'color.ui', 'always')
         git(self.root, 'config', 'color.diff', 'always')
-        (self.root / 'value.txt').write_text('sk-' + 'x' * 30 + '\n')
+        (self.root / 'value.txt').write_text('++sk-' + 'x' * 30 + '\n')
         git(self.root, 'commit', '-am', 'Transient credential')
         (self.root / 'value.txt').write_text('fixed\n'); git(self.root, 'commit', '-am', 'Remove credential')
         self.head = git(self.root, 'rev-parse', 'HEAD'); git(self.root, 'push', 'origin', 'topic')
@@ -387,7 +395,7 @@ class ChatMergeTests(unittest.TestCase):
         self.assertNotIn('delivery_attempts', read_json(self.path))
 
     def test_transient_credential_content_is_checked_in_published_history(self):
-        (self.root / 'value.txt').write_text('sk-' + 'x' * 30 + '\n')
+        (self.root / 'value.txt').write_text('++sk-' + 'x' * 30 + '\n')
         git(self.root, 'commit', '-am', 'Transient credential content')
         (self.root / 'value.txt').write_text('fixed\n')
         git(self.root, 'commit', '-am', 'Remove credential content')
@@ -573,6 +581,11 @@ class ChatMergeTests(unittest.TestCase):
         self.gh.merge_ci = [{'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]
         self.call(apply=True)
         self.assertEqual(len(self.gh.attempts), 1)
+        ci = read_json(self.path)['chat_merge']['ci']
+        self.assertEqual(ci['final_rollups']['head']['state'], 'FAILURE')
+        self.assertEqual(ci['final_rollups']['merge']['state'], 'SUCCESS')
+        self.assertEqual({row['conclusion'] for row in ci['refreshed_nodes']}, {'FAILURE', 'SUCCESS'})
+        self.assertEqual(set(ci['inventory_reads']), {'head', 'merge'})
 
     def test_pr_changed_after_ci_is_revalidated_before_dispatch(self):
         self.reviewed()

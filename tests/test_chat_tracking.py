@@ -13,7 +13,7 @@ import test_factory as fixtures
 import sfc
 from test_pickup import PickupGitHub, ticket
 from sfc_lib import autostart, chat_tracking
-from sfc_lib.common import Halt, common_dir, exclusive, git, load_config, read_json, run, write_json
+from sfc_lib.common import NotDispatched, _owned_io, Halt, common_dir, exclusive, git, load_config, read_json, run, write_json
 from sfc_lib.github import GitHub
 from sfc_lib.session_runtime import SessionRuntime, request_attachment
 from sfc_lib.ticket_coordination import ticket_directory
@@ -142,6 +142,48 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.sync()['state'], 'synced')
         self.assertEqual(self.gh.github_status['item-1'], 'done')
 
+
+    def test_sync_owns_io_even_when_the_factory_is_paused(self):
+        self.start(); self.update('review', 'Review', pr=41)
+        (self.root / '.sfc/stop').touch()
+        original = self.gh.chat_pr
+        def observed(*args, **kwargs):
+            self.assertIsNotNone(_owned_io.get())
+            return original(*args, **kwargs)
+        with patch.object(self.gh, 'chat_pr', side_effect=observed):
+            self.assertEqual(self.sync()['state'], 'synced')
+        self.assertIsNone(_owned_io.get())
+
+    def test_definitely_unsent_done_write_can_retry(self):
+        self.start(); self.update('review', 'Review', pr=41); self.sync()
+        self.gh.pull['state'] = 'MERGED'
+        with patch.object(self.gh, 'move', side_effect=NotDispatched('Stopped before spawn')):
+            self.assertEqual(self.sync()['state'], 'pending')
+        record = read_json(chat_tracking.task_path(self.root, self.task))
+        self.assertEqual(record['events'][-1]['routing_write']['state'], 'unsent')
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+
+    def test_definitely_unsent_note_and_attachment_can_retry(self):
+        self.start(); self.update('review', 'Review', pr=41, closes_issue=True)
+        with patch.object(self.gh, 'attach_chat_pr', side_effect=NotDispatched('Stopped before spawn')):
+            self.sync()
+        path = chat_tracking.task_path(self.root, self.task)
+        self.assertEqual(read_json(path)['native_pr_attachment']['state'], 'unsent')
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'verified')
+        self.assertEqual(len(self.gh.native_writes), 1)
+        record = read_json(path)
+        event = {'id': 'known-unsent-note', 'stage': 'Done', 'summary': 'Verified merge'}
+        record['events'].append(event)
+        original = self.gh.call
+        def no_post(*args, **kwargs):
+            if '--method' in args:
+                raise NotDispatched('Stopped before spawn')
+            return original(*args, **kwargs)
+        with patch.object(self.gh, 'call', side_effect=no_post), self.assertRaises(NotDispatched):
+            chat_tracking.sync_note(self.gh, path, record, event, None)
+        self.assertEqual(read_json(path)['events'][-1]['note'], 'unsent')
+        chat_tracking.sync_note(self.gh, path, record, event, None)
+        self.assertEqual(event['note'], 'verified')
 
     def test_guard_rejected_unsent_note_can_retry_but_unknown_post_is_readback_only(self):
         self.start()

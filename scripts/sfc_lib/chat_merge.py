@@ -73,6 +73,14 @@ def commit_closure_scope(messages, repository, number, host):
                 raise Halt('Commit-message issue closures exceed the tracked issue scope; maintainer handoff required')
 
 
+def require_history(root):
+    if (git(root, 'rev-parse', '--is-shallow-repository') != 'false' or
+            git(root, 'for-each-ref', '--format=%(refname)', 'refs/replace') or
+            (common_dir(root) / 'info/grafts').exists() or
+            any(os.environ.get(key) for key in ('GIT_REPLACE_REF_BASE', 'GIT_GRAFT_FILE'))):
+        raise Halt('Automatic delivery requires complete unmodified Git history; maintainer handoff required')
+
+
 def support(gh, config):
     """Expose unavailable automation at setup; never change repository rules."""
     try:
@@ -131,11 +139,7 @@ class Delivery:
         self.card = tracking.verified_card(self.gh, self.record)
         if not completion and (self.card['state'] != 'OPEN' or self.card['status'] not in ('QA', 'Review')):
             raise Halt('Chat delivery requires the open tracked issue in QA or Review')
-        if (git(self.wt, 'rev-parse', '--is-shallow-repository') != 'false' or
-                git(self.wt, 'for-each-ref', '--format=%(refname)', 'refs/replace') or
-                (common_dir(self.wt) / 'info/grafts').exists() or
-                any(os.environ.get(key) for key in ('GIT_REPLACE_REF_BASE', 'GIT_GRAFT_FILE'))):
-            raise Halt('Automatic delivery requires complete unmodified Git history; maintainer handoff required')
+        require_history(self.wt)
         self.local.clean(self.wt, self.head)
         if (self.head == self.base or run(['git', 'merge-base', '--is-ancestor', self.base, self.head],
                                         self.wt, check=False).returncode):
@@ -320,7 +324,10 @@ class Delivery:
         if not checks_pass({'statusCheckRollup': checks}, self.c['allow_no_checks']):
             raise Halt('Required GitHub checks are missing, pending or failed')
         return {**candidate, 'checks_source': source, 'checks': checks, 'observed_at': now(),
-                'inventory_reads': inventories, 'final_rollup': commit['statusCheckRollup']}
+                'inventory_reads': inventories, 'final_rollup': commit['statusCheckRollup'],
+                'final_rollups': {'head': snapshot['head']['target']['statusCheckRollup'],
+                                  'merge': merge['statusCheckRollup']},
+                'refreshed_nodes': nodes}
 
     def prepare(self):
         previous = self.record.get('chat_merge')
@@ -504,6 +511,7 @@ class Delivery:
 
 def merge_observation(gh, root, record):
     """Readback of the original intent, including descendants; never a ref write."""
+    require_history(root)
     intent = record['chat_merge']
     if intent['state'] not in ('dispatching', 'responded', 'confirmed'):
         return 'uncertain'  # A stopped/rejected preflight cannot certify a later human merge.
@@ -545,13 +553,13 @@ def merge_observation(gh, root, record):
             (pr.get('mergeCommit') or {}).get('oid') != intent['head']):
         return 'uncertain'
     # Fetch only to inspect reachability; do not move a checkout or rewrite refs.
-    git(root, 'fetch', '--no-tags', 'origin', intent['base_ref'])
+    git(root, '--no-replace-objects', 'fetch', '--no-tags', 'origin', intent['base_ref'])
     gh.verify_repository()
     live = snapshot['base']['target']['oid']
-    landed = (git(root, 'rev-parse', 'FETCH_HEAD') == live and
-            git(root, 'rev-parse', live + '^{tree}') == snapshot['base']['target']['tree']['oid'] and
-            git(root, 'rev-parse', intent['head'] + '^{tree}') == intent['tree'] and
-            run(['git', 'merge-base', '--is-ancestor', intent['head'], live], root, check=False).returncode == 0)
+    landed = (git(root, '--no-replace-objects', 'rev-parse', 'FETCH_HEAD') == live and
+            git(root, '--no-replace-objects', 'rev-parse', live + '^{tree}') == snapshot['base']['target']['tree']['oid'] and
+            git(root, '--no-replace-objects', 'rev-parse', intent['head'] + '^{tree}') == intent['tree'] and
+            run(['git', '--no-replace-objects', 'merge-base', '--is-ancestor', intent['head'], live], root, check=False).returncode == 0)
     return ('merged' if issue['state'] == 'CLOSED' else 'awaiting-closure') if landed else 'uncertain'
 
 

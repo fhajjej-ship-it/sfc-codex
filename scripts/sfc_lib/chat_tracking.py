@@ -336,7 +336,13 @@ def guarded_done_write(path, record, event, key, binding, send, guard):
         event[key]['state'] = 'unsent'
         write_json(path, record)
         raise
-    send()  # Unknown results keep their original intent.
+    from .common import NotDispatched
+    try:
+        send()  # Unknown results keep their original intent.
+    except NotDispatched:
+        event[key]['state'] = 'unsent'
+        write_json(path, record)
+        raise
 
 
 def sync_stage(gh, path, record, card, event, *, guard=None):
@@ -406,7 +412,13 @@ def sync_note(gh, path, record, event, pr_url, *, guard=None):
             event['note'] = 'unsent'
             write_json(path, record)
             raise
-        result = gh.call('api', endpoint, '--method', 'POST', '--input', '-', input=json.dumps({'body': body}))
+        from .common import NotDispatched
+        try:
+            result = gh.call('api', endpoint, '--method', 'POST', '--input', '-', input=json.dumps({'body': body}))
+        except NotDispatched:
+            event['note'] = 'unsent'
+            write_json(path, record)
+            raise
         if not result.get('id') or result.get('body') != body:
             raise Halt('The milestone note response did not match')
     event['note'] = 'verified'
@@ -421,7 +433,7 @@ def sync_pr_attachment(gh, path, record, target, *, expected=False):
     if previous and previous['binding'] != binding:
         raise Halt('Native PR attachment identity changed; inspect the saved receipt')
     linked = observed['pull_request'] in observed['references']
-    if previous and not linked:
+    if previous and previous['state'] != 'unsent' and not linked:
         raise Halt('Native PR attachment needs readback or was removed; the write will not be repeated')
     if not linked and not record.get('closes_issue'):
         if expected:
@@ -437,7 +449,13 @@ def sync_pr_attachment(gh, path, record, target, *, expected=False):
             raise Halt('Native PR attachment scope or references changed before writing')
         record['native_pr_attachment'] = {'state': 'intent', 'binding': binding, 'requested_at': now()}
         write_json(path, record)
-        gh.attach_chat_pr(observed['issue'], observed['pull_request'])
+        from .common import NotDispatched
+        try:
+            gh.attach_chat_pr(observed['issue'], observed['pull_request'])
+        except NotDispatched:
+            record['native_pr_attachment']['state'] = 'unsent'
+            write_json(path, record)
+            raise
         checked = gh.chat_pr_attachment(record['issue'], repository, number)
         if ({key: checked[key] for key in binding} != binding or
                 checked['pull_request'] not in checked['references']):
@@ -449,103 +467,114 @@ def sync_pr_attachment(gh, path, record, target, *, expected=False):
 
 
 def sync(gh, root, task):
+    from .common import Processes
+    from .chat_merge import owned_processes
     path = task_path(root, task)
     with exclusive(root), local_lock(path.with_suffix('.lock')):
         record = read_task(path, load_config(root))
-        if scope(gh.c) != record['scope']:
-            raise Halt('Tracking configuration changed before sync')
-        number = record.get('pr')
-        pr_url = record.get('pr_url')
-        target = pr_target(gh.c['repo'], number, pr_url)
-        latest = record['events'][-1]
-        completed = latest['stage'] == 'Done' and latest.get('synced')
-        if completed and target is None:
-            saved_url = (record.get('native_pr_attachment') or {}).get('binding', {}).get('url') or latest.get('closing_pr_url')
-            if saved_url:
-                target = pr_target(gh.c['repo'], None, saved_url)
-        follow_pr = target is not None and latest['stage'] != 'Done'
-        pending = any(not event.get('synced') for event in record['events'])
-        attachment_pending = bool(record.get('native_pr_attachment_error') or
-                                  record.get('native_pr_attachment'))
-        closing_pr_url = latest.get('closing_pr_url') if pending else None
-        follow_closure = (target is None and record.get('delivery') != 'local-only'
-                          and (latest['stage'] in ('QA', 'Review') or closing_pr_url is not None))
-        if not (follow_pr or follow_closure or pending or attachment_pending):
-            return {'state': 'synced', **view(record)}
-        try:
-            if not record.get('issue'):
-                bind_issue(gh, root, path, record)
-            pull = None
-            if pr_url is not None or (target is not None and number is None):
-                repository, pull_number = target
-                pull = observe_pr(gh.chat_pr(pull_number, repository=repository), pull_number,
-                                  record['scope']['base_branch'], repository)
-                if repository != gh.c['repo'].casefold() and (pending or pull['state'] == 'MERGED'):
-                    gh.verify_chat_link_visibility(repository)
-            elif number is not None:
-                pull = observe_pr(gh.chat_pr(number), number, record['scope']['base_branch'], gh.c['repo'])
-            elif follow_closure:
-                pull = observe_closing_pr(gh, record)
-            if closing_pr_url is not None and (pull is None or pull['url'] != closing_pr_url):
-                raise Halt('The verified closing pull request changed before Done synced')
-            if pull:
-                record['pull_request'] = pull
-                attachment_target = target or pr_target(gh.c['repo'], None, pull['url'])
-                try:
-                    sync_pr_attachment(gh, path, record, attachment_target,
-                                       expected=bool(follow_closure or latest.get('closing_pr_url')))
-                except (Halt, OSError, ValueError, KeyError) as exc:
-                    # Link writes retain their own intent. Independently
-                    # verified milestone and merge observations can still sync.
-                    record['native_pr_attachment_error'] = str(exc)
-                    write_json(path, record)
-                else:
-                    record.pop('native_pr_attachment_error', None)
-                if pull['state'] == 'MERGED' and record.get('chat_merge') and not completed:
-                    if record['chat_merge']['state'] == 'not-dispatched':
-                        record['manual_merge_completion'] = dict(pull)
-                    else:
-                        from .chat_merge import merge_observation
-                        observation = merge_observation(gh, root, record)
-                        if observation == 'awaiting-closure':
-                            raise Halt('GitHub verified the landing; close the tracked issue before Done')
-                        if observation != 'merged':
-                            raise Halt('Retained atomic intent does not confirm this merged candidate; maintainer handoff required')
-                        record['chat_merge']['state'] = 'confirmed'
-                    write_json(path, record)
-                if latest['stage'] != 'Done' and pull['state'] == 'MERGED' and record.get('pr_role') != 'milestone':
-                    # Save the completion event before writing either status field.
-                    completion = {'id': 'sfc:pr-merged', 'stage': 'Done', 'pr': number,
-                                  'summary': 'GitHub confirmed the linked pull request merged.'}
-                    if follow_closure:
-                        completion['closing_pr_url'] = pull['url']
-                        completion['summary'] = 'GitHub confirmed the linked pull request merged and closed this issue.'
-                    record['events'].append(completion)
-                    write_json(path, record)
-            for event in record['events']:
-                if event.get('synced'):
-                    continue
-                if pull and event['stage'] == 'Done' and pull['state'] != 'MERGED':
-                    raise Halt('The linked pull request has not merged')
-                url = pull['url'] if pull and (event.get('pr') or event.get('pr_url') or
-                                               event['stage'] in ('Review', 'Done')) else None
-                card = verified_card(gh, record)
-                owned = record.get('chat_merge') and record['chat_merge']['state'] != 'not-dispatched'
-                if event['stage'] == 'Done' and (event.get('closing_pr_url') or owned) and card['state'] != 'CLOSED':
-                    raise Halt('The tracked issue reopened before Done synced')
-                guard = None
-                if event['stage'] == 'Done' and owned:
-                    from .chat_merge import completion_guard
-                    guard = lambda: completion_guard(root, record, gh)
-                    guard()  # Recovered no-write paths still need a fresh closed/routing check.
-                sync_stage(gh, path, record, card, event, guard=guard)
-                sync_note(gh, path, record, event, url, guard=guard)
-                event['synced'] = now()
-                write_json(path, record)
-        except (Halt, OSError, ValueError, KeyError) as exc:
-            record['last_sync_error'] = str(exc)
-            write_json(path, record)
-            return {'state': 'pending', **view(record), 'receipt': str(path)}
-        record.pop('last_sync_error', None)
-        write_json(path, record)
+        processes = Processes(path.with_suffix('.io-stop'))
+        if record.get('chat_merge') and record['chat_merge']['state'] != 'not-dispatched':
+            processes.stop_path = Path(root) / '.sfc/stop'
+            processes.shared_stop_path = common_dir(root) / 'sfc-stop'
+        with owned_processes(processes):
+            return sync_locked(gh, root, path, record)
+
+
+def sync_locked(gh, root, path, record):
+    if scope(gh.c) != record['scope']:
+        raise Halt('Tracking configuration changed before sync')
+    number = record.get('pr')
+    pr_url = record.get('pr_url')
+    target = pr_target(gh.c['repo'], number, pr_url)
+    latest = record['events'][-1]
+    completed = latest['stage'] == 'Done' and latest.get('synced')
+    if completed and target is None:
+        saved_url = (record.get('native_pr_attachment') or {}).get('binding', {}).get('url') or latest.get('closing_pr_url')
+        if saved_url:
+            target = pr_target(gh.c['repo'], None, saved_url)
+    follow_pr = target is not None and latest['stage'] != 'Done'
+    pending = any(not event.get('synced') for event in record['events'])
+    attachment_pending = bool(record.get('native_pr_attachment_error') or
+                              record.get('native_pr_attachment'))
+    closing_pr_url = latest.get('closing_pr_url') if pending else None
+    follow_closure = (target is None and record.get('delivery') != 'local-only'
+                      and (latest['stage'] in ('QA', 'Review') or closing_pr_url is not None))
+    if not (follow_pr or follow_closure or pending or attachment_pending):
         return {'state': 'synced', **view(record)}
+    try:
+        if not record.get('issue'):
+            bind_issue(gh, root, path, record)
+        pull = None
+        if pr_url is not None or (target is not None and number is None):
+            repository, pull_number = target
+            pull = observe_pr(gh.chat_pr(pull_number, repository=repository), pull_number,
+                              record['scope']['base_branch'], repository)
+            if repository != gh.c['repo'].casefold() and (pending or pull['state'] == 'MERGED'):
+                gh.verify_chat_link_visibility(repository)
+        elif number is not None:
+            pull = observe_pr(gh.chat_pr(number), number, record['scope']['base_branch'], gh.c['repo'])
+        elif follow_closure:
+            pull = observe_closing_pr(gh, record)
+        if closing_pr_url is not None and (pull is None or pull['url'] != closing_pr_url):
+            raise Halt('The verified closing pull request changed before Done synced')
+        if pull:
+            record['pull_request'] = pull
+            attachment_target = target or pr_target(gh.c['repo'], None, pull['url'])
+            try:
+                sync_pr_attachment(gh, path, record, attachment_target,
+                                   expected=bool(follow_closure or latest.get('closing_pr_url')))
+            except (Halt, OSError, ValueError, KeyError) as exc:
+                # Link writes retain their own intent. Independently
+                # verified milestone and merge observations can still sync.
+                record['native_pr_attachment_error'] = str(exc)
+                write_json(path, record)
+            else:
+                record.pop('native_pr_attachment_error', None)
+            if pull['state'] == 'MERGED' and record.get('chat_merge') and not completed:
+                if record['chat_merge']['state'] == 'not-dispatched':
+                    record['manual_merge_completion'] = dict(pull)
+                else:
+                    from .chat_merge import merge_observation
+                    observation = merge_observation(gh, root, record)
+                    if observation == 'awaiting-closure':
+                        raise Halt('GitHub verified the landing; close the tracked issue before Done')
+                    if observation != 'merged':
+                        raise Halt('Retained atomic intent does not confirm this merged candidate; maintainer handoff required')
+                    record['chat_merge']['state'] = 'confirmed'
+                write_json(path, record)
+            if latest['stage'] != 'Done' and pull['state'] == 'MERGED' and record.get('pr_role') != 'milestone':
+                # Save the completion event before writing either status field.
+                completion = {'id': 'sfc:pr-merged', 'stage': 'Done', 'pr': number,
+                              'summary': 'GitHub confirmed the linked pull request merged.'}
+                if follow_closure:
+                    completion['closing_pr_url'] = pull['url']
+                    completion['summary'] = 'GitHub confirmed the linked pull request merged and closed this issue.'
+                record['events'].append(completion)
+                write_json(path, record)
+        for event in record['events']:
+            if event.get('synced'):
+                continue
+            if pull and event['stage'] == 'Done' and pull['state'] != 'MERGED':
+                raise Halt('The linked pull request has not merged')
+            url = pull['url'] if pull and (event.get('pr') or event.get('pr_url') or
+                                           event['stage'] in ('Review', 'Done')) else None
+            card = verified_card(gh, record)
+            owned = record.get('chat_merge') and record['chat_merge']['state'] != 'not-dispatched'
+            if event['stage'] == 'Done' and (event.get('closing_pr_url') or owned) and card['state'] != 'CLOSED':
+                raise Halt('The tracked issue reopened before Done synced')
+            guard = None
+            if event['stage'] == 'Done' and owned:
+                from .chat_merge import completion_guard
+                guard = lambda: completion_guard(root, record, gh)
+                guard()  # Recovered no-write paths still need a fresh closed/routing check.
+            sync_stage(gh, path, record, card, event, guard=guard)
+            sync_note(gh, path, record, event, url, guard=guard)
+            event['synced'] = now()
+            write_json(path, record)
+    except (Halt, OSError, ValueError, KeyError) as exc:
+        record['last_sync_error'] = str(exc)
+        write_json(path, record)
+        return {'state': 'pending', **view(record), 'receipt': str(path)}
+    record.pop('last_sync_error', None)
+    write_json(path, record)
+    return {'state': 'synced', **view(record)}
