@@ -58,7 +58,7 @@ class Delivery:
         self.local = LocalMerge(SimpleNamespace(c=self.c, watcher=None))
 
     def running(self):
-        if digest(load_config(self.root)) != self.config or self.processes.stopped():
+        if digest(load_config(tracking.primary_root(self.root))) != self.config or self.processes.stopped():
             raise Halt('Delivery stopped or configuration changed; preserve spending and receipts')
 
     def guard(self, *, completion=False):
@@ -110,9 +110,12 @@ class Delivery:
                 if '-' in (a, d):
                     raise Halt('Binary changes require a maintainer handoff')
                 lines += int(a) + int(d)
+        history = ['git', 'log', '--format=', '--no-renames', '--diff-merges=separate']
+        history_paths = run([*history, '--name-only', self.base + '..' + self.head], self.wt).stdout.splitlines()
+        history_patch = run([*history, '-p', '--no-ext-diff', '--no-textconv', self.base + '..' + self.head], self.wt).stdout
         problems = policy_reasons(self.c, self.card, {**pr, 'additions': max(lines, pr['additions'] + pr['deletions']),
-                                                    'deletions': 0, 'files': pr['files'] + [{'path': p} for p in paths]})
-        problem = secret_problem(paths, git(self.wt, 'diff', self.base, self.head))
+                                                    'deletions': 0, 'files': pr['files'] + [{'path': p} for p in paths + history_paths if p]})
+        problem = secret_problem(paths + history_paths, history_patch)
         if problems or problem or not paths:
             raise Halt('; '.join(problems + ([problem] if problem else []) + ([] if paths else ['Empty candidate'])))
         intent = {'id': uuid.uuid4().hex, 'pr': number, 'pr_url': pr['url'], 'head': self.head, 'base': self.base,
@@ -132,6 +135,9 @@ class Delivery:
             raise Halt('The applicable PR check candidate changed before dispatch')
         intent.update(repository_id=snapshot['id'], pr_id=live['id'],
                       head_id=snapshot['head']['id'], base_id=snapshot['base']['id'])
+        current = tracking.verified_card(self.gh, self.record)
+        if digest(current) != digest(self.card):
+            raise Halt('Live issue policy or routing changed during candidate validation')
         self.intent = intent
         return intent, pr
 
@@ -181,6 +187,7 @@ class Delivery:
         previous = self.record.get('chat_merge')
         if previous and previous['state'] != 'not-dispatched':
             raise Halt('A merge intent already exists; only readback is permitted')
+        self.gh.local_merge_capabilities()
         intent, _ = self.candidate()
         criteria = self.criteria()
         if not self.c['verify_commands']:
@@ -267,21 +274,7 @@ class Delivery:
                     for row, criterion in zip(rows, criteria))):
             raise Halt('Independent review has findings, missing coverage or additional obligations')
 
-    def apply(self):
-        if self.record.get('chat_merge'):
-            if (self.record['chat_merge']['head'], self.record['chat_merge']['base']) != (self.head, self.base):
-                raise Halt('Retained merge pins changed; inspect without another write')
-            if self.record['chat_merge']['state'] == 'not-dispatched':
-                return {'state': 'not-dispatched', 'detail': 'Sync an external merge, or prepare within the remaining allowance; spending is retained'}
-            landed = confirmed(self.gh, self.root, self.record)
-            return {'state': 'merged' if landed else 'uncertain', 'detail': 'Readback only; merge writes are never repeated'}
-        intent, pr = self.candidate(ready=True)
-        if self.record['events'][-1]['stage'] != 'Review' or pr['isDraft']:
-            raise Halt('A ready PR and recorded Review milestone are required')
-        proof = (self.record.get('delivery_attempts') or [{}])[-1]
-        if (proof.get('state') != 'qualified' or proof.get('binding') != self.binding() or
-                not self.fresh(proof)):
-            raise Halt('Missing or stale delivery checks/review; repeat preparation within the remaining allowance')
+    def validate_receipts(self, proof, *, final=False):
         checks = proof['checks']
         if (proof['review_scope'] != {**proof['binding'], 'checks': digest(checks)} or
                 len(checks) != len(self.c['verify_commands']) or any(
@@ -289,6 +282,32 @@ class Delivery:
                 for row, command in zip(checks, self.c['verify_commands'])) or
                 checksum(proof['log']) != proof['log_sha256'] or not review_policy.native_proof(proof, self.wt)):
             raise Halt('Original verification or native review proof changed')
+        if final:
+            rows = proof['final_checks']
+            if len(rows) != len(self.c['verify_commands']) or any(
+                    row['command'] != command or row['exit_code'] != 0 or checksum(row['log']) != row['sha256']
+                    for row, command in zip(rows, self.c['verify_commands'])):
+                raise Halt('Final verification receipts changed before dispatch')
+
+    def apply(self):
+        if self.record.get('chat_merge'):
+            if (self.record['chat_merge']['head'], self.record['chat_merge']['base']) != (self.head, self.base):
+                raise Halt('Retained merge pins changed; inspect without another write')
+            if self.record['chat_merge']['state'] == 'not-dispatched':
+                return {'state': 'not-dispatched', 'detail': 'Sync an external merge, or prepare within the remaining allowance; spending is retained'}
+            state = merge_observation(self.gh, self.root, self.record)
+            detail = ('GitHub verified the landing; close the tracked issue before Done' if state == 'awaiting-closure'
+                      else 'Readback only; merge writes are never repeated')
+            return {'state': state, 'detail': detail}
+        self.gh.local_merge_capabilities()
+        intent, pr = self.candidate(ready=True)
+        if self.record['events'][-1]['stage'] != 'Review' or pr['isDraft']:
+            raise Halt('A ready PR and recorded Review milestone are required')
+        proof = (self.record.get('delivery_attempts') or [{}])[-1]
+        if (proof.get('state') != 'qualified' or proof.get('binding') != self.binding() or
+                not self.fresh(proof)):
+            raise Halt('Missing or stale delivery checks/review; repeat preparation within the remaining allowance')
+        self.validate_receipts(proof)
         self.accept_review(proof, self.criteria())
         _, provider = review_policy.native_command(SimpleNamespace(c=self.c), self.wt, Path(proof['native_message']))
         if provider != proof['provider']:
@@ -317,6 +336,8 @@ class Delivery:
         self.local.clean(scratch, self.head)
         if source_tree(scratch) != proof['binding']['tree']:
             raise Halt('Final checks changed the pinned candidate')
+        self.validate_receipts(proof, final=True)
+        self.gh.local_merge_capabilities()
         ci = self.check_ci()
         intent, _ = self.candidate(ready=True, ci=ci)  # Last remote read validates live PR, issue and refs.
         if proof['binding'] != self.binding() or not self.fresh(proof):
@@ -339,11 +360,11 @@ class Delivery:
         return {'state': 'awaiting-recognition', 'head': self.head, 'detail': 'Sync after GitHub confirms the merge'}
 
 
-def confirmed(gh, root, record):
+def merge_observation(gh, root, record):
     """Readback of the original intent, including descendants; never a ref write."""
     intent = record['chat_merge']
     if intent['state'] not in ('dispatching', 'responded', 'confirmed'):
-        return False  # A stopped/rejected preflight cannot certify a later human merge.
+        return 'uncertain'  # A stopped/rejected preflight cannot certify a later human merge.
     proofs = [p for p in record.get('delivery_attempts', []) if p.get('binding') == intent['binding'] and
               p['intent']['id'] == intent['preparation_id']]
     if len(proofs) != 1:
@@ -351,7 +372,7 @@ def confirmed(gh, root, record):
     proof = proofs[0]
     from datetime import datetime
     age = (datetime.fromisoformat(intent['dispatch_at']) - datetime.fromisoformat(proof['completed_at'])).total_seconds()
-    if (digest(load_config(root)) != intent['binding']['config'] or
+    if (digest(load_config(tracking.primary_root(root))) != intent['binding']['config'] or
             not 0 <= age <= 86400 or
             proof.get('state') != 'qualified' or not proof.get('final_checks') or
             any(intent[key] != intent['binding'][key] for key in ('head', 'base', 'tree')) or
@@ -379,16 +400,21 @@ def confirmed(gh, root, record):
     if intent.get('closing_issues') != [card['id']]:
         raise Halt('The original closing-issue scope is missing; retain the intent for maintainer inspection')
     if (pr['state'] != 'MERGED' or pr['headRefOid'] != intent['head'] or
-            (pr.get('mergeCommit') or {}).get('oid') != intent['head'] or issue['state'] != 'CLOSED'):
-        return False
+            (pr.get('mergeCommit') or {}).get('oid') != intent['head']):
+        return 'uncertain'
     # Fetch only to inspect reachability; do not move a checkout or rewrite refs.
     git(root, 'fetch', '--no-tags', 'origin', intent['base_ref'])
     gh.verify_repository()
     live = snapshot['base']['target']['oid']
-    return (git(root, 'rev-parse', 'FETCH_HEAD') == live and
+    landed = (git(root, 'rev-parse', 'FETCH_HEAD') == live and
             git(root, 'rev-parse', live + '^{tree}') == snapshot['base']['target']['tree']['oid'] and
             git(root, 'rev-parse', intent['head'] + '^{tree}') == intent['tree'] and
             run(['git', 'merge-base', '--is-ancestor', intent['head'], live], root, check=False).returncode == 0)
+    return ('merged' if issue['state'] == 'CLOSED' else 'awaiting-closure') if landed else 'uncertain'
+
+
+def confirmed(gh, root, record):
+    return merge_observation(gh, root, record) == 'merged'
 
 
 def completion_guard(root, record, gh=None):
@@ -397,7 +423,7 @@ def completion_guard(root, record, gh=None):
         if card['state'] != 'CLOSED' or record['chat_merge']['binding']['task'] != digest(
                 {k: card[k] for k in ('id', 'item_id', 'number', 'title', 'body', 'labels')}):
             raise Halt('The tracked issue reopened or changed before Done')
-    if (digest(load_config(root)) != record['chat_merge']['binding']['config'] or
+    if (digest(load_config(tracking.primary_root(root))) != record['chat_merge']['binding']['config'] or
             (Path(root) / '.sfc/stop').exists() or (common_dir(root) / 'sfc-stop').exists()):
         raise Halt('Completion stopped or its configuration changed; preserve the original intent')
 
@@ -405,6 +431,7 @@ def completion_guard(root, record, gh=None):
 def delivery(gh, root, task, worktree, head, base, *, apply=False, processes=None):
     if not all(isinstance(value, str) and re.fullmatch('[0-9a-f]{40}', value) for value in (head, base)):
         raise Halt('Use complete reviewed head and base commit IDs')
+    root = tracking.primary_root(root)
     path = tracking.task_path(root, task)
     with exclusive(root), tracking.local_lock(path.with_suffix('.lock')):
         record = tracking.read_task(path, load_config(root))

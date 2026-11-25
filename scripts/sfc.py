@@ -538,7 +538,8 @@ def main(argv=None):
                                    body=Path(args.body_file).read_text(), priority=args.priority,
                                    reason=args.reason, unknowns=args.unknowns, work_type=args.work_type, labels=args.label)
         elif args.command == 'track':
-            root = chat_tracking.project_root(root)
+            root = (chat_tracking.primary_root(root) if args.action == 'merge'
+                    else chat_tracking.project_root(root))
             config = load_config(root)
             if args.action == 'enable':
                 result = chat_tracking.enable(root)

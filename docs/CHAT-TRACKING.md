@@ -117,7 +117,11 @@ reservation. Completion requires the matching closed issue, including after a
 later base advance or deletion of the merged topic branch. A definitely unsent
 attempt can also follow an externally verified human merge through ordinary
 tracking; its original proof and spending stay intact. Unknown writes still
-require owned-candidate readback.
+require owned-candidate readback. A verified landing with an open issue reports
+an issue-closure handoff and remains short of Done. Merge authority always comes
+from the primary checkout. Gates inspect every newly reachable commit for
+sensitive paths and credentials, and revalidate execution receipts, write
+capability and live issue policy before dispatch.
 Existing configurations and custom review requirements are not migrated.
 This provider requires same-repository PRs whose sole closing issue is the tracked task, reviewed identity-bound
 consent and unprotected/unruled default-branch refs; unavailable capabilities are

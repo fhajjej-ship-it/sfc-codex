@@ -682,6 +682,20 @@ class ChatTrackingTests(unittest.TestCase):
                 self.assertIn('your Codex chat', error.getvalue())
                 legacy.assert_not_called()
 
+    def test_merge_cli_uses_primary_authority_even_with_a_copied_linked_config(self):
+        checkout = self.root.parent / 'linked-copy'
+        git(self.root, 'worktree', 'add', '--detach', checkout)
+        copied = {**self.c, 'merge_policy': 'auto'}
+        write_json(checkout / '.sfc/config.json', copied)
+        from sfc_lib import chat_merge
+        with patch.object(sfc, 'GitHub') as github, patch.object(chat_merge, 'delivery', return_value={'state': 'fixture'}) as delivery:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(sfc.main(['--root', str(checkout), 'track', 'merge', '--task', self.task,
+                    '--worktree', str(checkout), '--head', 'a' * 40, '--base', 'b' * 40, '--prepare']), 0)
+        self.assertEqual(github.call_args.args[0], self.root.resolve())
+        self.assertEqual(github.call_args.args[1]['merge_policy'], self.c['merge_policy'])
+        self.assertEqual(delivery.call_args.args[1], self.root.resolve())
+
     def test_linked_checkout_tracks_from_the_configured_project_even_if_old_receipt_is_invalid(self):
         checkout = self.root / '.sfc' / 'worktrees' / 'track-local'
         git(self.root, 'worktree', 'add', '--detach', checkout)

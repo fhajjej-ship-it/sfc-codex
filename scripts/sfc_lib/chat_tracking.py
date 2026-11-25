@@ -24,15 +24,16 @@ def chat_mode(root):
     return (root / '.sfc/config.json').is_file()
 
 
+def primary_root(cwd):
+    root = repo_root(cwd)
+    main = git(root, 'worktree', 'list', '--porcelain', '-z').split('\0', 1)[0]
+    return Path(main.removeprefix('worktree ')).resolve() if main.startswith('worktree ') else root
+
+
 def project_root(cwd):
     """Resolve the project independently of any saved watcher authorization."""
     root = repo_root(cwd)
-    if chat_mode(root):
-        return root
-    main = git(root, 'worktree', 'list', '--porcelain', '-z').split('\0', 1)[0]
-    if main.startswith('worktree '):
-        return Path(main.removeprefix('worktree ')).resolve()
-    return root
+    return root if chat_mode(root) else primary_root(root)
 
 
 def enable(root):
@@ -91,7 +92,8 @@ def view(record):
             'desired_stage': latest['stage'],
             'latest_summary': latest['summary'] or record['summary'],
             'board_stage': record.get('board_stage'),
-            'pending': [event['id'] for event in record['events'] if not event.get('synced')]}
+            'pending': [event['id'] for event in record['events'] if not event.get('synced')],
+            **({'detail': record['last_sync_error']} if record.get('last_sync_error') else {})}
 
 
 def read_task(path, config):
@@ -443,8 +445,11 @@ def sync(gh, root, task):
                     if record['chat_merge']['state'] == 'not-dispatched':
                         record['manual_merge_completion'] = dict(pull)
                     else:
-                        from .chat_merge import confirmed
-                        if not confirmed(gh, root, record):
+                        from .chat_merge import merge_observation
+                        observation = merge_observation(gh, root, record)
+                        if observation == 'awaiting-closure':
+                            raise Halt('GitHub verified the landing; close the tracked issue before Done')
+                        if observation != 'merged':
                             raise Halt('Retained atomic intent does not confirm this merged candidate; maintainer handoff required')
                         record['chat_merge']['state'] = 'confirmed'
                     write_json(path, record)

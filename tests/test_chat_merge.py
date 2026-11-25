@@ -1,6 +1,7 @@
 """Chat merge contract: real temporary Git, fake GitHub and native Codex only."""
 import copy
 import json
+import shutil
 from pathlib import Path
 import unittest
 from unittest.mock import patch
@@ -131,6 +132,75 @@ class ChatMergeTests(unittest.TestCase):
             'issue': self.gh.items[0]['id'], 'pull_request': 'pr-node-101', 'base': 'main',
             'url': 'https://github.com/example/app/pull/101'}}
         write_json(self.path, record)
+
+    def test_copied_worktree_grant_cannot_override_revoked_primary_authority(self):
+        child = self.root.parent / 'linked'
+        git(self.root, 'worktree', 'add', '--detach', child, self.head)
+        (child / '.sfc').mkdir()
+        shutil.copyfile(self.root / '.sfc/config.json', child / '.sfc/config.json')
+        write_json(self.root / '.sfc/config.json', {**self.c, 'merge_policy': 'human', 'chat_merge_authority': None})
+        with self.assertRaisesRegex(Halt, 'configuration changed'):
+            chat_merge.delivery(self.gh, child, self.task, child, self.head, self.base, processes=self.processes)
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+
+    def test_transient_sensitive_history_requires_handoff_even_when_reverted(self):
+        (self.root / '.env').write_text('fixture credential file')
+        git(self.root, 'add', '.env'); git(self.root, 'commit', '-m', 'Transient sensitive file')
+        git(self.root, 'rm', '.env'); git(self.root, 'commit', '-m', 'Remove sensitive file')
+        self.head = git(self.root, 'rev-parse', 'HEAD')
+        git(self.root, 'push', 'origin', 'topic')
+        with self.assertRaisesRegex(Halt, 'sensitive credential file'):
+            self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+
+    def test_transient_credential_content_is_checked_in_published_history(self):
+        (self.root / 'value.txt').write_text('sk-' + 'x' * 30 + '\n')
+        git(self.root, 'commit', '-am', 'Transient credential content')
+        (self.root / 'value.txt').write_text('fixed\n')
+        git(self.root, 'commit', '-am', 'Remove credential content')
+        self.head = git(self.root, 'rev-parse', 'HEAD')
+        git(self.root, 'push', 'origin', 'topic')
+        with self.assertRaisesRegex(Halt, 'live-looking credential'):
+            self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+
+    def test_live_policy_change_during_final_snapshot_prevents_dispatch(self):
+        self.reviewed()
+        reads = 0
+        def edit(snapshot):
+            nonlocal reads
+            reads += 1
+            if reads == 6:
+                self.gh.items[0]['labels'].append('human-only')
+        self.gh.edit_snapshot = edit
+        with self.assertRaisesRegex(Halt, 'issue policy'):
+            self.call(apply=True)
+        self.assertEqual(self.gh.attempts, [])
+
+    def test_final_commands_cannot_replace_original_review_or_check_receipts(self):
+        self.reviewed()
+        proof = read_json(self.path)['delivery_attempts'][0]
+        original = self.processes.execute
+        def alter(*args, **kwargs):
+            code = original(*args, **kwargs)
+            Path(proof['checks'][0]['log']).write_text('replaced during final checks')
+            return code
+        with patch.object(self.processes, 'execute', side_effect=alter), self.assertRaisesRegex(Halt, 'proof changed'):
+            self.call(apply=True)
+        self.assertNotIn('chat_merge', read_json(self.path))
+        self.assertEqual(self.gh.attempts, [])
+
+    def test_atomic_capability_is_required_before_spending_and_before_dispatch(self):
+        with patch.object(self.gh, 'local_merge_capabilities', side_effect=Halt('Atomic support unavailable')):
+            with self.assertRaisesRegex(Halt, 'Atomic support'):
+                self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+        self.reviewed()
+        with patch.object(self.gh, 'local_merge_capabilities', side_effect=Halt('Atomic support unavailable')):
+            with self.assertRaisesRegex(Halt, 'Atomic support'):
+                self.call(apply=True)
+        self.assertNotIn('chat_merge', read_json(self.path))
+        self.assertEqual(self.gh.attempts, [])
 
     def test_other_closing_issues_require_handoff_before_spending_or_writing(self):
         def extra(snapshot):
@@ -273,7 +343,7 @@ class ChatMergeTests(unittest.TestCase):
     def test_closed_issue_recognition_is_required_and_reopening_blocks_completion(self):
         self.reviewed(); self.gh.close_issue = False
         self.call(apply=True)
-        self.assertEqual(self.call(apply=True)['state'], 'uncertain')
+        self.assertEqual(self.call(apply=True)['state'], 'awaiting-closure')
         self.gh.items[0]['state'] = 'CLOSED'
         self.assertEqual(self.call(apply=True)['state'], 'merged')
         self.gh.items[0]['state'] = 'OPEN'
