@@ -15,6 +15,26 @@ from sfc_lib.common import Halt, Stopped, common_dir, exclusive, git, read_json,
 
 class ChatGitHub(AtomicGitHub):
     repository_id = 'repo-node'
+    default_branch = 'main'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        head, base = self.oid('topic'), self.oid('main')
+        self.merge_tree = self.oid(head + '^{tree}')
+        self.merge_parents = [base, head]
+        self.merge_oid = git(self.root, 'commit-tree', self.merge_tree, '-p', base, '-p', head, '-m', 'Test merge')
+        self.merge_ci = []
+
+    def local_merge_snapshot(self, *args):
+        snapshot = super().local_merge_snapshot(*args)
+        snapshot['defaultBranchRef'] = {'name': self.default_branch}
+        snapshot['pullRequest']['potentialMergeCommit'] = {
+            'oid': self.merge_oid, 'tree': {'oid': self.merge_tree},
+            'parents': {'totalCount': 2, 'nodes': [{'oid': oid} for oid in self.merge_parents]}}
+        return snapshot
+
+    def local_merge_checks(self, head):
+        return copy.deepcopy(self.merge_ci) if head == self.merge_oid else super().local_merge_checks(head)
 
     def onboarding_identity(self):
         return {'host': 'github.com', 'repository_id': self.repository_id,
@@ -22,7 +42,8 @@ class ChatGitHub(AtomicGitHub):
 
     def graphql(self, query, variables):
         if 'ref(qualifiedName:$base)' in query:
-            return {'repository': {'ref': {'branchProtectionRule': self.protected, 'rules': {'totalCount': self.rules}}}}
+            return {'repository': {'defaultBranchRef': {'name': self.default_branch},
+                                   'ref': {'branchProtectionRule': self.protected, 'rules': {'totalCount': self.rules}}}}
         return super().graphql(query, variables)
 
     def atomic_fast_forward(self, intent):
@@ -35,7 +56,8 @@ class ChatGitHub(AtomicGitHub):
         run(['git', 'update-ref', '--stdin'], self.remote, input=transaction)
         self.applied.append(copy.deepcopy(intent))
         self.prs[intent['pr']].update(state='MERGED', mergeCommit={'oid': intent['head']})
-        self.items[0]['state'] = 'CLOSED'
+        if self.close_issue:
+            self.items[0]['state'] = 'CLOSED'
         if self.lost_response:
             raise Halt('Fixture lost the atomic write response')
 
@@ -151,35 +173,143 @@ class ChatMergeTests(unittest.TestCase):
         self.assertEqual(self.processes.events, events)
         self.assertEqual(len(self.gh.attempts), 1)
 
+    def test_applicable_test_merge_checks_take_precedence_over_head_checks(self):
+        self.reviewed()
+        self.gh.merge_ci = [{'status': 'COMPLETED', 'conclusion': 'FAILURE'}]
+        with self.assertRaisesRegex(Halt, 'GitHub checks'):
+            self.call(apply=True)
+        self.assertNotIn('apply_reserved', read_json(self.path)['delivery_attempts'][0])
+        self.gh.ci = [{'status': 'COMPLETED', 'conclusion': 'FAILURE'}]
+        self.gh.merge_ci = [{'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]
+        self.call(apply=True)
+        self.assertEqual(len(self.gh.attempts), 1)
+
+    def test_pr_changed_after_ci_is_revalidated_before_dispatch(self):
+        self.reviewed()
+        reads = 0
+        def edit(snapshot):
+            nonlocal reads
+            reads += 1
+            if reads == 5:  # CI's final read returns; then the server changes the PR.
+                self.gh.prs[101]['isDraft'] = True
+        self.gh.edit_snapshot = edit
+        with self.assertRaisesRegex(Halt, 'ready PR'):
+            self.call(apply=True)
+        self.assertEqual(self.gh.attempts, [])
+
+    def test_stale_ignored_inputs_cannot_make_the_fresh_final_checkout_pass(self):
+        with (common_dir(self.root) / 'info/exclude').open('a') as handle:
+            handle.write('\nignored-proof\n')
+        (self.root / 'ignored-proof').write_text('stale')
+        self.c['verify_commands'] = ["python3 -c \"from pathlib import Path; assert Path('ignored-proof').exists()\""]
+        write_json(self.root / '.sfc/config.json', self.c)
+        self.reviewed()
+        with self.assertRaisesRegex(Halt, 'Final candidate verification failed'):
+            self.call(apply=True)
+        final = Path(read_json(self.path)['delivery_attempts'][0]['final_worktree'])
+        self.assertFalse((final / 'ignored-proof').exists())
+        self.assertTrue((self.root / 'ignored-proof').exists())
+        self.assertEqual(self.gh.attempts, [])
+
+    def test_closed_issue_recognition_is_required_and_reopening_blocks_completion(self):
+        self.reviewed(); self.gh.close_issue = False
+        self.call(apply=True)
+        self.assertEqual(self.call(apply=True)['state'], 'uncertain')
+        self.gh.items[0]['state'] = 'CLOSED'
+        self.assertEqual(self.call(apply=True)['state'], 'merged')
+        self.gh.items[0]['state'] = 'OPEN'
+        with self.assertRaisesRegex(Halt, 'reopened'):
+            chat_merge.completion_guard(self.root, read_json(self.path), self.gh)
+        self.assertEqual(len(self.gh.attempts), 1)
+
+    def test_nondefault_bases_and_missing_native_review_are_explicit_before_spending(self):
+        self.gh.default_branch = 'release'
+        self.assertFalse(chat_merge.support(self.gh, self.c)['available'])
+        with self.assertRaisesRegex(Halt, 'default branch'):
+            self.call()
+        self.gh.default_branch = 'main'
+        with patch.object(review_policy, 'native_command', side_effect=Halt('Native unavailable')):
+            self.assertFalse(chat_merge.support(self.gh, self.c)['available'])
+            with self.assertRaisesRegex(Halt, 'Native unavailable'):
+                self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+        self.assertEqual(self.processes.events, [])
+
+    def test_scope_changed_during_checks_does_not_dispatch_a_stale_native_review(self):
+        original = self.processes.execute
+        def change(argv, *args, **kwargs):
+            code = original(argv, *args, **kwargs)
+            self.gh.default_branch = 'release'
+            return code
+        with patch.object(self.processes, 'execute', side_effect=change), self.assertRaisesRegex(Halt, 'default branch'):
+            self.call()
+        self.assertEqual(self.processes.lanes, [])
+        self.assertEqual(len(read_json(self.path)['delivery_attempts']), 1)
+
+    def test_known_predispatch_abort_can_use_remaining_allowance_without_refunding(self):
+        self.reviewed()
+        original = chat_merge.write_json
+        def stop_before_send(path, record):
+            original(path, record)
+            if record.get('chat_merge', {}).get('state') == 'dispatching':
+                (common_dir(self.root) / 'sfc-stop').touch()
+        with patch.object(chat_merge, 'write_json', side_effect=stop_before_send), self.assertRaises(Halt):
+            self.call(apply=True)
+        self.assertEqual(read_json(self.path)['chat_merge']['state'], 'not-dispatched')
+        self.assertEqual(self.gh.attempts, [])
+        (common_dir(self.root) / 'sfc-stop').unlink()  # Explicit test operator re-arm.
+        self.reviewed(); self.call(apply=True)
+        record = read_json(self.path)
+        self.assertEqual(len(record['delivery_attempts']), 2)
+        self.assertEqual(record['undispatched_merges'][0]['state'], 'not-dispatched')
+        self.assertEqual(len(self.gh.attempts), 1)
+
+    def test_a_legacy_or_unknown_intent_never_becomes_a_new_write(self):
+        self.reviewed()
+        record = read_json(self.path)
+        record['chat_merge'] = {'state': 'intent', 'head': self.head, 'base': self.base}
+        write_json(self.path, record)
+        with self.assertRaisesRegex(Halt, 'only readback'):
+            self.call()
+        self.assertEqual(self.call(apply=True)['state'], 'uncertain')
+        self.assertEqual(len(read_json(self.path)['delivery_attempts']), 1)
+        self.assertEqual(self.gh.attempts, [])
+
     def test_final_ci_change_or_stop_at_readback_prevents_dispatch(self):
         self.reviewed()
         reads = 0
+        original = self.gh.local_merge_checks
         def changed(head):
             nonlocal reads
-            reads += 1
-            return [{'status': 'COMPLETED', 'conclusion': 'SUCCESS' if reads == 1 else 'FAILURE'}]
+            if head == self.head:
+                reads += 1
+                if reads > 1:
+                    return [{'status': 'COMPLETED', 'conclusion': 'FAILURE'}]
+            return original(head)
         with patch.object(self.gh, 'local_merge_checks', side_effect=changed), self.assertRaisesRegex(Halt, 'GitHub checks'):
             self.call(apply=True)
         self.assertEqual(self.gh.attempts, [])
-        self.assertIn('chat_merge', read_json(self.path))
-        self.gh.prs[101].update(state='MERGED', mergeCommit={'oid': self.head})
-        git(self.remote, 'update-ref', 'refs/heads/main', self.head)
-        self.gh.items[0]['state'] = 'CLOSED'
-        self.assertEqual(self.call(apply=True)['state'], 'uncertain')
+        self.assertNotIn('chat_merge', read_json(self.path))
+        self.reviewed()  # A demonstrably unsent attempt can recover, without a refund.
+        self.call(apply=True)
+        self.assertEqual(len(read_json(self.path)['delivery_attempts']), 2)
+        self.assertEqual(len(self.gh.attempts), 1)
 
     def test_stop_during_final_github_read_keeps_intent_without_dispatch(self):
         self.reviewed()
         reads = 0
+        original = self.gh.local_merge_checks
         def stop(head):
             nonlocal reads
-            reads += 1
-            if reads > 1:
-                (common_dir(self.root) / 'sfc-stop').touch()
-            return [{'status': 'COMPLETED', 'conclusion': 'SUCCESS'}]
+            if head == self.head:
+                reads += 1
+                if reads > 1:
+                    (common_dir(self.root) / 'sfc-stop').touch()
+            return original(head)
         with patch.object(self.gh, 'local_merge_checks', side_effect=stop), self.assertRaisesRegex(Halt, 'stopped'):
             self.call(apply=True)
         self.assertEqual(self.gh.attempts, [])
-        self.assertIn('chat_merge', read_json(self.path))
+        self.assertNotIn('chat_merge', read_json(self.path))
 
     def test_live_issue_criteria_are_required_even_when_the_chat_saved_a_subset(self):
         self.gh.items[0]['body'] += '- A newly added live obligation\n'
@@ -306,6 +436,11 @@ class ChatMergeTests(unittest.TestCase):
         for _ in range(2):
             with self.assertRaises(Stopped):
                 self.call()
+        with self.assertRaisesRegex(Halt, 'allowance exhausted'):
+            self.call()
+        self.assertEqual(len(read_json(self.path)['delivery_attempts']), 2)
+        self.c['max_attempts'] = 9
+        write_json(self.root / '.sfc/config.json', self.c)
         with self.assertRaisesRegex(Halt, 'allowance exhausted'):
             self.call()
         self.assertEqual(len(read_json(self.path)['delivery_attempts']), 2)

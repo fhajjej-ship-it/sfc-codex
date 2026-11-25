@@ -78,15 +78,16 @@ missing required check, unresolved finding or uncertain write remains pending.
 Use `track merge --task ID --worktree PATH --head SHA --base SHA --prepare`
 for the configured chat atomic provider. It runs the configured checks and
 an independent native Codex review with parsed completion and acceptance
-coverage, within a finite, persisted preparation allowance. Only qualified
-evidence permits marking the PR ready and recording Review. Then use the same
+coverage, within a finite, persisted preparation allowance. During implementation,
+use focused checks. Preparation owns its full suite and native review; do not
+duplicate them beforehand. Qualified evidence permits marking the PR ready and recording Review. Then use the same
 pins with `--apply`: fresh final checks, original proof validation and policy
 guards precede one atomic compare of both refs. Sync after GitHub confirms
 the merge. Preserve uncertain intents; subsequent apply only reads them back.
 An expected-head-only queued merge cannot establish the required binding.
 Setup and doctor report availability separately from saved consent. The chat
-provider supports same-repository closing PRs on refs without active protection
-or rules; it never bypasses those rules or custom review-policy obligations.
+provider supports same-repository closing PRs on unprotected/unruled default
+branches; it never bypasses rules or custom review-policy obligations.
 Other configurations retain a concrete maintainer/human handoff.
 The legacy local-verification `run` entry point is unavailable in chat mode.
 Existing projects with that mode need an authorized maintainer merge or a

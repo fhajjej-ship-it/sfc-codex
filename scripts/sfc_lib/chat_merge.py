@@ -32,13 +32,17 @@ def support(gh, config):
             raise Halt('Configure meaningful --verify commands before automatic delivery')
         gh.local_merge_capabilities()
         owner, name = config['repo'].split('/')
-        ref = gh.graphql('''query($owner:String!,$name:String!,$base:String!) {
-          repository(owner:$owner,name:$name) { ref(qualifiedName:$base) {
+        repo = gh.graphql('''query($owner:String!,$name:String!,$base:String!) {
+          repository(owner:$owner,name:$name) { defaultBranchRef { name } ref(qualifiedName:$base) {
             branchProtectionRule { id } rules(first:1) { totalCount }
           } }
-        }''', {'owner': owner, 'name': name, 'base': 'refs/heads/' + config['base_branch']})['repository']['ref']
+        }''', {'owner': owner, 'name': name, 'base': 'refs/heads/' + config['base_branch']})['repository']
+        ref = repo['ref']
+        if repo['defaultBranchRef']['name'] != config['base_branch']:
+            raise Halt('Atomic closing-PR delivery requires the live default branch; use a maintainer handoff')
         if ref['branchProtectionRule'] is not None or type(ref['rules']['totalCount']) is not int or ref['rules']['totalCount'] != 0:
             raise Halt('Atomic chat merging refuses protected or ruled refs; use the repository maintainer merge process')
+        review_policy.native_command(SimpleNamespace(c=config), Path(gh.root), Path(gh.root) / '.sfc/review-probe')
     except (Halt, KeyError, TypeError) as exc:
         return {'available': False, 'provider': PROVIDER, 'reason': str(exc)}
     return {'available': True, 'provider': PROVIDER}
@@ -85,11 +89,13 @@ class Delivery:
         pr, issue = self.local.identity(self.card, intent, snapshot)
         if snapshot['id'] != self.c['chat_merge_authority']['repository_id']:
             raise Halt('Reviewed repository identity changed')
+        if snapshot['defaultBranchRef']['name'] != self.c['base_branch']:
+            raise Halt('The delivery base is not the live default branch; maintainer handoff required')
         self.refs = {'repository': snapshot['id'], 'pr': pr['id'],
                      **{key: snapshot[key]['id'] for key in ('head', 'base')}}
         return snapshot, pr, issue
 
-    def candidate(self, *, ready=False):
+    def candidate(self, *, ready=False, ci=None):
         self.guard()
         _, number = tracking.pr_target(self.c['repo'], self.record.get('pr'), self.record.get('pr_url'))
         pr = self.gh.pr(number)
@@ -119,8 +125,11 @@ class Delivery:
                       self.record.get('native_pr_attachment', {}).get('state') != 'verified' or
                       self.record.get('native_pr_attachment_error')):
             raise Halt('Sync pending milestones and native attachment readback before merging')
+        if ci is not None and self.ci_candidate(snapshot, intent) != ci:
+            raise Halt('The applicable PR check candidate changed before dispatch')
         intent.update(repository_id=snapshot['id'], pr_id=live['id'],
                       head_id=snapshot['head']['id'], base_id=snapshot['base']['id'])
+        self.intent = intent
         return intent, pr
 
     def binding(self):
@@ -137,25 +146,57 @@ class Delivery:
     def criteria(self):
         return list(dict.fromkeys(self.record['acceptance'] + acceptance_criteria(self.card['body'])))
 
+    def ci_candidate(self, snapshot, intent):
+        pr = snapshot['pullRequest']
+        merge = pr['potentialMergeCommit']
+        if (not self.local.matches_before(snapshot, intent) or pr['state'] != 'OPEN' or pr['isDraft'] is not False or
+                not merge or not re.fullmatch('[0-9a-f]{40}', merge['oid']) or merge['tree']['oid'] != intent['tree'] or
+                type(merge['parents']['totalCount']) is not int or merge['parents']['totalCount'] != 2 or
+                len(merge['parents']['nodes']) != 2 or
+                {v['oid'] for v in merge['parents']['nodes']} != {self.head, self.base}):
+            raise Halt('PR test-merge checks do not belong to the exact reviewed head/base/tree')
+        return {'head': self.head, 'base': self.base, 'merge': merge['oid']}
+
     def check_ci(self):
-        if not checks_pass({'statusCheckRollup': self.gh.local_merge_checks(self.head)}, self.c['allow_no_checks']):
+        snapshot, _, _ = self.snapshot(self.intent)
+        candidate = self.ci_candidate(snapshot, self.intent)
+        checks = self.gh.local_merge_checks(candidate['merge'])
+        if not isinstance(checks, list):
+            raise Halt('The complete test-merge check inventory is missing')
+        if not checks:  # GitHub uses head checks only when the test merge has none.
+            checks = self.gh.local_merge_checks(self.head)
+        if not isinstance(checks, list):
+            raise Halt('The complete head check inventory is missing')
+        after, _, _ = self.snapshot(self.intent)
+        if self.ci_candidate(after, self.intent) != candidate:
+            raise Halt('PR check scope changed during inventory')
+        if not checks_pass({'statusCheckRollup': checks}, self.c['allow_no_checks']):
             raise Halt('Required GitHub checks are missing, pending or failed')
+        return candidate
 
     def prepare(self):
-        if self.record.get('chat_merge'):
+        previous = self.record.get('chat_merge')
+        if previous and previous['state'] != 'not-dispatched':
             raise Halt('A merge intent already exists; only readback is permitted')
         intent, _ = self.candidate()
         criteria = self.criteria()
         if not self.c['verify_commands']:
             raise Halt('Configure meaningful verification commands before automatic delivery')
         attempts = self.record.setdefault('delivery_attempts', [])
-        if len(attempts) >= self.c['max_attempts']:
+        limit = min(self.record.get('delivery_limit', self.c['max_attempts']), self.c['max_attempts'])
+        if len(attempts) >= limit:
             raise Halt('Chat delivery preparation allowance exhausted; saved spending is unchanged')
-        folder = common_dir(self.root) / 'sfc-chat-delivery' / self.record['task'] / str(len(attempts) + 1)
+        folder = common_dir(self.root) / 'sfc-chat-delivery' / self.record['task'] / f'{len(attempts) + 1}-{uuid.uuid4().hex[:8]}'
+        raw, log, rollout = folder / 'native-message.txt', folder / 'native.jsonl', folder / 'rollout.jsonl'
+        argv, provider = review_policy.native_command(SimpleNamespace(c=self.c), self.wt, raw)
         folder.mkdir(parents=True, mode=0o700)
         proof = {'state': 'reserved', 'time': now(), 'binding': self.binding(), 'intent': intent, 'checks': [],
                  'worktree': str(self.wt)}
         attempts.append(proof)
+        self.record['delivery_limit'] = limit
+        if previous:
+            self.record.setdefault('undispatched_merges', []).append(previous)
+            self.record.pop('chat_merge')
         write_json(self.path, self.record)  # Spend before any check or model launch.
         for index, command in enumerate(self.c['verify_commands']):
             log = folder / f'check-{index}.log'
@@ -165,11 +206,13 @@ class Delivery:
             write_json(self.path, self.record)
             if code:
                 raise Halt('Project verification failed; retained log and spent preparation')
-        self.guard()
+        self.candidate()  # Do not spend a native review on refs/task scope changed during checks.
         if self.binding() != proof['binding']:
             raise Halt('Check inputs changed; preserve the original execution receipts')
         raw, log, rollout = folder / 'native-message.txt', folder / 'native.jsonl', folder / 'rollout.jsonl'
-        argv, provider = review_policy.native_command(SimpleNamespace(c=self.c), self.wt, raw)
+        _, current_provider = review_policy.native_command(SimpleNamespace(c=self.c), self.wt, raw)
+        if current_provider != provider:
+            raise Halt('Native review provider changed while running project checks')
         scope = {**proof['binding'], 'checks': digest(proof['checks'])}
         prompt = ('Independently review the exact diff with git diff --no-ext-diff --no-textconv ' + self.base + ' ' + self.head +
                   '. Read applicable repository instructions. Do not implement or write to GitHub. '
@@ -225,6 +268,8 @@ class Delivery:
         if self.record.get('chat_merge'):
             if (self.record['chat_merge']['head'], self.record['chat_merge']['base']) != (self.head, self.base):
                 raise Halt('Retained merge pins changed; inspect without another write')
+            if self.record['chat_merge']['state'] == 'not-dispatched':
+                return {'state': 'not-dispatched', 'detail': 'Prepare again within the remaining allowance; original spending is retained'}
             landed = confirmed(self.gh, self.root, self.record)
             return {'state': 'merged' if landed else 'uncertain', 'detail': 'Readback only; merge writes are never repeated'}
         intent, pr = self.candidate(ready=True)
@@ -249,34 +294,42 @@ class Delivery:
         if proof.get('apply_reserved'):
             raise Halt('This final verification attempt is already spent; preserve it and prepare within the remaining allowance')
         proof.update(apply_reserved=now(), final_checks=[])
+        scratch = Path(proof['log']).parent / ('candidate-' + uuid.uuid4().hex[:8])
+        proof['final_worktree'] = str(scratch)
         write_json(self.path, self.record)
+        git(self.root, 'worktree', 'add', '--detach', scratch, self.head)
         # Preserve the existing fresh final-check gate; old review/check logs
         # remain original executions, never relabeled as this execution.
         for index, command in enumerate(self.c['verify_commands']):
             log = Path(proof['log']).parent / f'final-check-{index}.log'
             self.guard()
-            code = self.processes.execute(shlex.split(command), self.wt, log, self.c['verify_timeout'])
+            self.local.clean(scratch, self.head)
+            if source_tree(scratch) != proof['binding']['tree']:
+                raise Halt('Final checkout does not contain the pinned candidate')
+            code = self.processes.execute(shlex.split(command), scratch, log, self.c['verify_timeout'])
             proof['final_checks'].append({'command': command, 'exit_code': code, 'log': str(log), 'sha256': checksum(log)})
             write_json(self.path, self.record)
             if code:
                 raise Halt('Final candidate verification failed; review and its spent allowance are preserved')
-        self.candidate(ready=True)  # Fresh policy, identity, issue and BOTH refs before intent.
+        self.local.clean(scratch, self.head)
+        if source_tree(scratch) != proof['binding']['tree']:
+            raise Halt('Final checks changed the pinned candidate')
+        ci = self.check_ci()
+        intent, _ = self.candidate(ready=True, ci=ci)  # Last remote read validates live PR, issue and refs.
         if proof['binding'] != self.binding() or not self.fresh(proof):
             raise Halt('Final verification inputs changed; repeat qualified preparation')
-        intent.update(state='intent', binding=proof['binding'], time=now(), preparation_id=proof['intent']['id'])
+        intent.update(state='dispatching', dispatch_at=now(), time=now(), binding=proof['binding'],
+                      preparation_id=proof['intent']['id'], ci=ci)
         self.record['chat_merge'] = intent
-        write_json(self.path, self.record)
-        self.candidate(ready=True)
-        if proof['binding'] != self.binding() or not self.fresh(proof):
-            raise Halt('Delivery inputs changed after journaling; inspect the retained intent')
-        self.check_ci()
-        if not self.fresh(proof):
-            raise Halt('Independent review expired before merge dispatch; retain the intent')
-        intent.update(state='dispatching', dispatch_at=now())
         write_json(self.path, self.record)  # Durable proof that the final gates actually passed.
-        if not self.fresh(proof):
-            raise Halt('Independent review expired while journaling; retain the intent')
-        self.running()  # No more blocking discovery between this stop check and dispatch.
+        try:
+            if not self.fresh(proof):
+                raise Halt('Independent review expired while journaling')
+            self.running()  # No more blocking discovery between this stop check and dispatch.
+        except Halt:
+            intent['state'] = 'not-dispatched'
+            write_json(self.path, self.record)
+            raise
         self.gh.atomic_fast_forward(intent)  # The sole write; unknown responses retain the intent.
         intent['state'] = 'responded'
         write_json(self.path, self.record)
@@ -319,9 +372,9 @@ def confirmed(gh, root, record):
         raise Halt('Tracked issue changed before merge completion')
     snapshot = gh.local_merge_snapshot(intent['pr'], card['number'], intent['base_ref'], intent['head_ref'])
     local = LocalMerge(SimpleNamespace(c=gh.c, watcher=None))
-    pr, _ = local.identity(card, intent, snapshot)
+    pr, issue = local.identity(card, intent, snapshot)
     if (pr['state'] != 'MERGED' or pr['headRefOid'] != intent['head'] or
-            (pr.get('mergeCommit') or {}).get('oid') != intent['head']):
+            (pr.get('mergeCommit') or {}).get('oid') != intent['head'] or issue['state'] != 'CLOSED'):
         return False
     # Fetch only to inspect reachability; do not move a checkout or rewrite refs.
     git(root, 'fetch', '--no-tags', 'origin', intent['base_ref'])
@@ -333,7 +386,12 @@ def confirmed(gh, root, record):
             run(['git', 'merge-base', '--is-ancestor', intent['head'], live], root, check=False).returncode == 0)
 
 
-def completion_guard(root, record):
+def completion_guard(root, record, gh=None):
+    if gh is not None:
+        card = tracking.verified_card(gh, record)
+        if card['state'] != 'CLOSED' or record['chat_merge']['binding']['task'] != digest(
+                {k: card[k] for k in ('id', 'item_id', 'number', 'title', 'body', 'labels')}):
+            raise Halt('The tracked issue reopened or changed before Done')
     if (digest(load_config(root)) != record['chat_merge']['binding']['config'] or
             (Path(root) / '.sfc/stop').exists() or (common_dir(root) / 'sfc-stop').exists()):
         raise Halt('Completion stopped or its configuration changed; preserve the original intent')

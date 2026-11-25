@@ -462,7 +462,7 @@ def sync(gh, root, task):
                 guard = None
                 if event['stage'] == 'Done' and record.get('chat_merge'):
                     from .chat_merge import completion_guard
-                    guard = lambda: completion_guard(root, record)
+                    guard = lambda: completion_guard(root, record, gh)
                 sync_stage(gh, path, record, card, event, guard=guard)
                 sync_note(gh, path, record, event, url, guard=guard)
                 event['synced'] = now()

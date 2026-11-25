@@ -101,14 +101,23 @@ delivery steps for the required verification and merge methods.
 `track merge --task ID --worktree PATH --head SHA --base SHA --prepare`
 owns actual configured checks and one independent native Codex review. It
 requires parsed native completion, exact scope and complete acceptance coverage.
+Preparation owns these checks/review; implementation uses focused checks and
+does not need a duplicate preliminary full suite or independent review.
 Each preparation is reserved durably before execution, bounded by `max_attempts`.
 The same pins with `--apply` require Review, validate original hashes, execute
 fresh final checks, enforce issue/size/sensitive policy and compare both refs
 atomically. A final-check reservation is spent even on interruption. Unknown
 merge outcomes keep the intent and permit only readback, never a second write.
+Final verification runs in a new detached checkout. Applicable CI follows
+[GitHub's test-merge precedence](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/troubleshooting-required-status-checks#conflicts-between-head-commit-and-test-merge-commit),
+with complete inventories and the live PR/issue/refs checked last. A known
+pre-dispatch failure retains its history and may use the remaining preparation
+allowance; it does not receive a refund. Native CLI capability is checked before
+reservation. Completion requires the matching closed issue, including after a
+later base advance.
 Existing configurations and custom review requirements are not migrated.
 This provider requires same-repository closing PRs, reviewed identity-bound
-consent and refs without active protection/rules; unavailable capabilities are
+consent and unprotected/unruled default-branch refs; unavailable capabilities are
 explicit in onboarding and doctor, with a maintainer handoff. It changes no
 repository protections and starts no builder or queue watcher.
 

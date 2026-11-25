@@ -22,13 +22,14 @@ ITEMS_QUERY = """query($id:ID!, $after:String) {
 LOCAL_MERGE_QUERY = """query($owner:String!, $name:String!, $number:Int!,
  $issue:Int!, $base:String!, $head:String!) {
  repository(owner:$owner, name:$name) {
- id nameWithOwner isArchived viewerPermission
+ id nameWithOwner isArchived viewerPermission defaultBranchRef { name }
  base:ref(qualifiedName:$base) { ...MergeRef }
  head:ref(qualifiedName:$head) { ...MergeRef }
  pullRequest(number:$number) {
  id number url state isDraft headRefName headRefOid baseRefName baseRefOid mergedAt
  headRepository { id nameWithOwner } baseRepository { id nameWithOwner }
  mergeCommit { oid }
+ potentialMergeCommit { oid tree { oid } parents(first:3) { totalCount nodes { oid } } }
  closingIssuesReferences(first:100) { totalCount nodes { id } }
  }
  issue(number:$issue) { id number url state repository { nameWithOwner } }
