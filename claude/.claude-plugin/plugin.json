@@ -1,0 +1,17 @@
+{
+  "name": "sfc",
+  "version": "0.2.2",
+  "description": "Track work done in Claude Code chats on a GitHub Project: tickets, checks, reviews, pull requests and verified completion.",
+  "author": {
+    "name": "Farouk Hajjej"
+  },
+  "homepage": "https://github.com/fhajjej-ship-it/sfc-codex",
+  "repository": "https://github.com/fhajjej-ship-it/sfc-codex",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "github-projects",
+    "chat-tracking",
+    "software-factory"
+  ]
+}

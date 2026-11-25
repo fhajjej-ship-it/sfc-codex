@@ -1,6 +1,6 @@
 ---
 name: sfc-build
-description: Implement one software-factory issue in an isolated Codex worktree, using its acceptance criteria and prior QA findings. Used by SFC's builder lane or for a specifically selected issue.
+description: Implement one software-factory issue in an isolated SFC worktree, using its acceptance criteria and prior QA findings. Used by SFC's builder lane or for a specifically selected issue.
 ---
 
 # SFC Build

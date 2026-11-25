@@ -1,6 +1,6 @@
 ---
 name: sfc-ui-refine
-description: Refine a selected page or component through browser critique, focused implementation and visual verification within a Codex project.
+description: Refine a selected page or component through browser critique, focused implementation and visual verification within a Codex or Claude Code project.
 ---
 
 # SFC UI refinement

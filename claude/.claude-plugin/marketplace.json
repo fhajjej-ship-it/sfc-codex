@@ -1,0 +1,16 @@
+{
+  "name": "sfc-marketplace",
+  "owner": {
+    "name": "Farouk Hajjej"
+  },
+  "metadata": {
+    "description": "SFC: GitHub Project tracking for work done in Claude Code chats."
+  },
+  "plugins": [
+    {
+      "name": "sfc",
+      "source": "./",
+      "description": "Track Claude Code chat work on a GitHub Project, through PR review and verified completion."
+    }
+  ]
+}

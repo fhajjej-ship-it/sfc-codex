@@ -16,6 +16,13 @@ from sfc_lib.factory import secret_problem
 from sfc_lib.autostart import launch
 from sfc_lib.chat_tracking import project_root
 
+# The host is declared by the hook configuration that runs this script, never
+# inferred from event contents. Claude Code's layout passes --host claude.
+HOST = 'claude' if '--host=claude' in sys.argv else 'codex'
+HOST_NAME = {'codex': 'Codex', 'claude': 'Claude Code'}[HOST]
+EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+EVENT_NAME = {}
+
 
 def context(cwd):
     result = subprocess.run(["git", "rev-parse", "--git-common-dir"], cwd=cwd,
@@ -42,6 +49,21 @@ def inside(path, root, cwd):
 def check(event, root, config, *, chat=False):
     tool = event.get("tool_name")
     data = event.get("tool_input", {})
+    if tool in EDIT_TOOLS:
+        # Claude Code file tools name their target directly.
+        target = data.get("file_path", data.get("notebook_path")) if isinstance(data, dict) else None
+        if not isinstance(target, str) or not target:
+            return "Cannot identify the edited file for SFC literal guards"
+        cwd = event.get("cwd", str(root))
+        if not inside(target, Path(cwd), cwd):
+            return "File edit escapes the selected worktree"
+        if sensitive(target):
+            return "Credential file edit blocked"
+        edits = data.get("edits") if isinstance(data.get("edits"), list) else []
+        text = [data.get("content"), data.get("new_string"), data.get("new_source"),
+                *(e.get("new_string") for e in edits if isinstance(e, dict))]
+        added = "\n".join(v for v in text if isinstance(v, str))
+        return secret_problem([], "".join("+" + line + "\n" for line in added.splitlines()))
     command = data.get("command", data.get("cmd", data.get("patch", ""))) if isinstance(data, dict) else data
     if not isinstance(command, str):
         return None
@@ -93,16 +115,18 @@ def check(event, root, config, *, chat=False):
 
 def main():
     event = json.load(sys.stdin)
+    if isinstance(event, dict) and isinstance(event.get('hook_event_name'), str):
+        EVENT_NAME['value'] = event['hook_event_name']
     if '--attachment' in sys.argv:
         from sfc_lib.session_runtime import request_attachment
-        result = request_attachment(event)
+        result = request_attachment(event, host=HOST)
         if result['state'] == 'tracking':
             plugin = Path(__file__).resolve().parents[1]
             command = shlex.join(['python3', str(plugin / 'scripts/sfc.py'), '--root', result['root'], 'track'])
             slot = result['prefix'] + '-' + result['turn']
             print(json.dumps({'hookSpecificOutput': {'hookEventName': event['hook_event_name'],
                   'additionalContext':
-                    'This project uses SFC chat tracking. Work directly in Codex without starting a separate worker. For an actionable feature, bug fix, '
+                    'This project uses SFC chat tracking. Work directly in ' + HOST_NAME + ' without starting a separate worker. For an actionable feature, bug fix, '
                     'maintenance, refactor or documentation change, record the task before editing. '
                     f'Use {command} status --prefix {result["prefix"]} to reuse an existing chat task. '
                     f'For new work, use {command} start --task {slot}. Decide delivery from the requested outcome: '
@@ -153,9 +177,10 @@ if __name__ == "__main__":
         main()
     except Exception as exc:
         if "--autostart" in sys.argv or "--session" in sys.argv or '--attachment' in sys.argv:
-            print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart',
+            print(json.dumps({'hookSpecificOutput': {'hookEventName': EVENT_NAME.get('value', 'SessionStart') if HOST == 'claude' else 'SessionStart',
                   'additionalContext': 'SFC could not validate local session configuration (' + type(exc).__name__ +
-                  '); no auto-start authorized. Inspect .sfc/config.json and autostart-status; review hooks in Codex.'}}))
+                  '); no auto-start authorized. Inspect .sfc/config.json and autostart-status; review hooks in ' +
+                  HOST_NAME + '.'}}))
             sys.exit(0)
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                 "permissionDecisionReason": "SFC guard could not validate this call: " + type(exc).__name__}}))

@@ -74,6 +74,21 @@ def validate():
                     assert hook['tool'] in ('session_attach', 'session_attach_hook', 'session_status')
                     assert hook['timeout'] <= 5
     assert 'SessionEnd' not in hooks['hooks']
+    if (ROOT / "claude").is_dir():
+        # Source checkouts carry the Claude Code overlay; the Codex package does not.
+        claude = json.loads((ROOT / "claude/.claude-plugin/plugin.json").read_text())
+        assert claude["name"] == "sfc" and claude["version"] == __version__
+        market = json.loads((ROOT / "claude/.claude-plugin/marketplace.json").read_text())
+        assert [p["name"] for p in market["plugins"]] == ["sfc"] and market["plugins"][0]["source"] == "./"
+        claude_hooks = json.loads((ROOT / "claude/hooks/hooks.json").read_text())["hooks"]
+        assert set(claude_hooks) == {"SessionStart", "UserPromptSubmit", "PreToolUse"}
+        for groups in claude_hooks.values():
+            for group in groups:
+                for hook in group["hooks"]:
+                    assert hook["type"] == "command" and "--host=claude" in hook["command"]
+                    assert '"${CLAUDE_PLUGIN_ROOT}/hooks/guard.py"' in hook["command"]
+                    assert "${PLUGIN_ROOT}" not in hook["command"].replace("${CLAUDE_PLUGIN_ROOT}", "")
+        assert not (ROOT / "claude/.mcp.json").exists(), "The Codex session MCP is not part of the Claude layout"
     assert (ROOT / "LICENSE").is_file()
     return {"valid": True, "name": manifest["name"], "version": manifest["version"],
             "format": 'portable-source' if portable else 'codex-resolved', "skills": sorted(found)}

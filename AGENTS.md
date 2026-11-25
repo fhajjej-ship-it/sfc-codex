@@ -1,6 +1,7 @@
 # SFC
 
-SFC is a Codex-only software factory plugin.
+SFC is a software factory plugin for Codex, with a Claude Code chat-tracking
+layout built from `claude/` (see docs/CLAUDE-CODE.md).
 Read docs/DESIGN.md before changing orchestration or merge behavior.
 
 Edit the plugin source in this repository and keep changes scoped.
