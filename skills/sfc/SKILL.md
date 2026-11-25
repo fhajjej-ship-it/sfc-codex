@@ -39,8 +39,11 @@ plugin code and skills read-only.
    badge. Sync creates and verifies that closing relationship through
    `addCloseIssueReferences`, including across repositories. A comment alone
    does not establish the attachment. Preserve existing links and pending writes.
-   A partial or tracking-only PR keeps its milestone link without adding a
-   closing relationship. Infer the intended scope from the requested work.
+   Record a partial or tracking-only PR with `--milestone-only`. Its merge
+   records progress, preserves its receipt and does not complete the task.
+   After its terminal state is verified and pending writes reconciled, record
+   the actual delivery PR on the same task. It keeps its milestone link without
+   adding a closing relationship. Infer the intended scope from the requested work.
    Report attachment warnings separately from verified milestone delivery.
    GitHub CI can run while verification continues. Move to Review as the change is
    reviewed and follow the repository's normal checks and merge permissions.
@@ -80,7 +83,9 @@ for the configured chat atomic provider. It runs the configured checks and
 an independent native Codex review with parsed completion and acceptance
 coverage, within a finite, persisted preparation allowance. During implementation,
 use focused checks. Preparation owns its full suite and native review; do not
-duplicate them beforehand. Qualified evidence permits marking the PR ready and recording Review. Then use the same
+duplicate them beforehand. Qualified evidence permits marking a new PR ready and recording Review. An authorized
+already-ready PR uses the same real verification and independent review; do not
+invent a prior draft milestone or require it to be recreated. Then use the same
 pins with `--apply`: fresh final checks, original proof validation and policy
 guards precede one atomic compare of both refs. Sync after GitHub confirms
 the merge. Preserve uncertain intents; subsequent apply only reads them back.

@@ -4,12 +4,15 @@ No builder, queue drain, protection bypass or mutation retry lives here.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import re
 import shlex
+import signal
 import sys
+import threading
 from types import SimpleNamespace
 import uuid
 
@@ -21,6 +24,43 @@ from .verification import checksum, digest, source_tree
 from .ticket_validation import acceptance_criteria
 
 PROVIDER = 'atomic-fast-forward'
+
+
+@contextmanager
+def owned_processes(processes):
+    """Keep child cleanup attached to this invocation, including CLI signals."""
+    from .lifeline import supported
+    from .common import Stopped
+    if threading.current_thread() is not threading.main_thread():
+        raise Halt('Chat delivery requires its own main-thread supervisor for signal ownership')
+    lifetime, cancel = processes.lifetime, processes.cancel_check
+    processes.lifetime = supported()
+    stopped = threading.Event()
+    handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    processes.cancel_check = lambda: stopped.is_set() or bool(cancel and cancel())
+    try:
+        for sig in handlers:
+            signal.signal(sig, lambda *_: stopped.set())
+        yield
+        if stopped.is_set():
+            raise Stopped('Delivery interrupted; original work and spending preserved')
+    finally:
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+        processes.lifetime, processes.cancel_check = lifetime, cancel
+
+
+def commit_closure_scope(messages, repository, number, host):
+    """Conservatively hand off messages that can close outside this task."""
+    for message in messages.split('\0'):
+        if not re.search(r'\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\b', message, re.I):
+            continue
+        urls = re.findall(r'https?://([^/\s]+)/([^/\s]+/[^/\s]+)/(issues|pull)/([1-9][0-9]*)', message, re.I)
+        refs = re.findall(r'(?<![\w/])(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#([1-9][0-9]*)', message)
+        if (any(h.casefold() != host.casefold() or repo.casefold() != repository.casefold() or kind.casefold() != 'issues' or int(n) != number
+                for h, repo, kind, n in urls) or
+                any((repo and repo.casefold() != repository.casefold()) or int(n) != number for repo, n in refs)):
+            raise Halt('Commit-message issue closures exceed the tracked issue scope; maintainer handoff required')
 
 
 def support(gh, config):
@@ -76,6 +116,8 @@ class Delivery:
             raise Halt('Chat merge authority/provider is missing, unsupported or belongs to a different repository identity')
         if tracking.pr_target(self.c['repo'], self.record.get('pr'), self.record.get('pr_url'))[0] != self.c['repo'].casefold():
             raise Halt('Cross-repository tracking does not transfer merge authority')
+        if self.record.get('pr_role') == 'milestone' or not self.record.get('closes_issue'):
+            raise Halt('Automatic delivery requires the task delivery PR and explicit closing intent')
         self.card = tracking.verified_card(self.gh, self.record)
         if not completion and (self.card['state'] != 'OPEN' or self.card['status'] not in ('QA', 'Review')):
             raise Halt('Chat delivery requires the open tracked issue in QA or Review')
@@ -111,6 +153,8 @@ class Delivery:
                     raise Halt('Binary changes require a maintainer handoff')
                 lines += int(a) + int(d)
         history = ['git', 'log', '--format=', '--no-renames', '--diff-merges=separate']
+        messages = run(['git', 'log', '--format=%B%x00', self.base + '..' + self.head], self.wt).stdout
+        commit_closure_scope(messages, self.c['repo'], self.card['number'], self.c['chat_merge_authority']['host'])
         history_paths = run([*history, '--name-only', '-z', self.base + '..' + self.head], self.wt).stdout.split('\0')
         history_stats = run([*history, '--numstat', '-z', self.base + '..' + self.head], self.wt).stdout
         if any(row.split('\t', 2)[:2] == ['-', '-'] for row in history_stats.split('\0') if row):
@@ -146,7 +190,7 @@ class Delivery:
 
     def binding(self):
         return {'head': self.head, 'base': self.base, 'tree': source_tree(self.wt), 'config': self.config,
-                'tracking': digest({k: self.record.get(k) for k in ('task', 'issue', 'delivery', 'pr', 'pr_url')}),
+                'tracking': digest({k: self.record.get(k) for k in ('task', 'issue', 'delivery', 'pr', 'pr_url', 'pr_role', 'closes_issue')}),
                 'refs': self.refs,
                 'task': digest({k: self.card[k] for k in ('id', 'item_id', 'number', 'title', 'body', 'labels')}),
                 'environment': digest({k: v for k, v in os.environ.items() if k not in ('_', 'PWD', 'OLDPWD', 'SHLVL')}),
@@ -380,7 +424,7 @@ def merge_observation(gh, root, record):
             proof.get('state') != 'qualified' or not proof.get('final_checks') or
             any(intent[key] != intent['binding'][key] for key in ('head', 'base', 'tree')) or
             proof['review_scope'] != {**proof['binding'], 'checks': digest(proof['checks'])} or
-            intent['binding']['tracking'] != digest({k: record.get(k) for k in ('task', 'issue', 'delivery', 'pr', 'pr_url')}) or
+            intent['binding']['tracking'] != digest({k: record.get(k) for k in ('task', 'issue', 'delivery', 'pr', 'pr_url', 'pr_role', 'closes_issue')}) or
             (common_dir(root) / 'sfc-stop').exists() or (Path(root) / '.sfc/stop').exists()):
         raise Halt('Completion scope, verification or stop authority changed; retain the intent')
     for checks in (proof['checks'], proof['final_checks']):
@@ -444,6 +488,7 @@ def delivery(gh, root, task, worktree, head, base, *, apply=False, processes=Non
             raise Halt('Chat merge needs a PR-required task and its recorded PR')
         handler = Delivery(gh, root, record, path, worktree, head, base, processes)
         try:
-            return handler.apply() if apply else handler.prepare()
+            with owned_processes(handler.processes):
+                return handler.apply() if apply else handler.prepare()
         except (ValueError, KeyError, TypeError, OSError) as exc:
             raise Halt('Incomplete or invalid chat delivery evidence; retain logs, spending and intents') from exc

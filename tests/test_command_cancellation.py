@@ -1,10 +1,13 @@
 """An overlapping check cancels only its own provisional model invocation."""
 from concurrent.futures import ThreadPoolExecutor
 import os
+import signal
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -13,6 +16,47 @@ from sfc_lib.common import CommandCancelled, Processes, command_cancellation
 
 
 class CancellationTests(unittest.TestCase):
+    def test_delivery_sigterm_cleans_up_its_active_child_and_restores_handlers(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name); log = root / 'child.log'
+            script = ("from pathlib import Path; import sys; from sfc_lib.common import Processes; "
+                      "from sfc_lib.chat_merge import owned_processes; "
+                      "p=Processes(Path(sys.argv[1])/'stop'); "
+                      "context=owned_processes(p); context.__enter__(); "
+                      "p.execute([sys.executable,'-u','-c','import os,time; print(os.getpid(),flush=True); time.sleep(30)'], "
+                      "sys.argv[1],Path(sys.argv[1])/'child.log',10)")
+            env = {**os.environ, 'PYTHONPATH': str(Path(__file__).resolve().parents[1] / 'scripts'), 'SFC_WORKER': '1'}
+            parent = subprocess.Popen([sys.executable, '-c', script, str(root)], env=env,
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and (not log.exists() or not log.read_text().strip()):
+                    time.sleep(.02)
+                self.assertTrue(log.exists() and log.read_text().strip())
+                child = int(log.read_text().splitlines()[0])
+                parent.send_signal(signal.SIGTERM)
+                parent.wait(timeout=7)
+                deadline = time.monotonic() + 2
+                while time.monotonic() < deadline:
+                    status = subprocess.run(['ps', '-p', str(child), '-o', 'stat='], capture_output=True, text=True).stdout.strip()
+                    if not status or status.startswith('Z'):
+                        break
+                    time.sleep(.02)
+                self.assertTrue(not status or status.startswith('Z'), 'Owned child outlived its delivery supervisor')
+            finally:
+                if parent.poll() is None:
+                    parent.terminate()
+                    try:
+                        parent.wait(timeout=4)
+                    except subprocess.TimeoutExpired:
+                        parent.kill(); parent.wait()
+        from sfc_lib.chat_merge import owned_processes
+        process = Processes(Path(name) / 'unused-stop')
+        old = signal.getsignal(signal.SIGTERM)
+        with owned_processes(process):
+            self.assertNotEqual(signal.getsignal(signal.SIGTERM), old)
+        self.assertEqual(signal.getsignal(signal.SIGTERM), old)
+
     def test_children_receive_the_actual_checkout_pwd_not_the_callers(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name).resolve()

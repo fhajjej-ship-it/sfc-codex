@@ -232,6 +232,34 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.gh.comments, notes)
         self.assertEqual(self.gh.pr_reads, [41, 41, 41, 41])
 
+    def test_partial_merge_stays_open_and_can_link_the_actual_delivery_pr(self):
+        self.start()
+        self.update('partial', 'QA', pr=41, milestone_only=True)
+        self.sync(); self.gh.pull['state'] = 'MERGED'
+        partial = self.sync()
+        self.assertEqual((partial['board_stage'], partial['pr_role']), ('QA', 'milestone'))
+        self.assertNotIn((1, 'Done'), self.gh.writes)
+        with self.assertRaisesRegex(Halt, 'milestone-only'):
+            self.update('premature', 'Done')
+        self.gh.pull.update(number=42, url='https://github.com/example/app/pull/42', state='OPEN')
+        self.update('delivery', 'Review', pr=42, closes_issue=True)
+        self.sync()
+        record = read_json(chat_tracking.task_path(self.root, self.task))
+        self.assertEqual((record['pr'], record['milestone_prs'][0]['pr']), (42, 41))
+        self.assertEqual(record['milestone_prs'][0]['pull_request']['state'], 'MERGED')
+        self.gh.pull['state'] = 'MERGED'
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+
+    def test_partial_pr_with_uncertain_notes_cannot_be_replaced(self):
+        self.start(); self.update('partial', 'QA', pr=41, milestone_only=True)
+        self.gh.pull['state'] = 'MERGED'; self.gh.lose_note_response = True
+        self.assertEqual(self.sync()['state'], 'pending')
+        with self.assertRaisesRegex(Halt, 'already tied'):
+            self.update('delivery', 'Review', pr=42, closes_issue=True)
+        record = read_json(chat_tracking.task_path(self.root, self.task))
+        self.assertEqual(record['pr'], 41)
+        self.assertNotIn('milestone_prs', record)
+
     def test_milestone_pr_does_not_authorize_issue_closure(self):
         self.start()
         self.update('partial', 'QA', pr=41)

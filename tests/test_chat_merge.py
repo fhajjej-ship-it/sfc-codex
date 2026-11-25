@@ -133,6 +133,28 @@ class ChatMergeTests(unittest.TestCase):
             'url': 'https://github.com/example/app/pull/101'}}
         write_json(self.path, record)
 
+    def test_commit_message_closures_cannot_exceed_the_tracked_issue(self):
+        for message in ('Fixes #2', 'CLOSES: other/repo#1', 'Resolves https://github.com/example/app/issues/2',
+                        'Fixes https://github.com/example/app/pull/2#issuecomment-3'):
+            with self.subTest(message=message), self.assertRaisesRegex(Halt, 'Commit-message'):
+                chat_merge.commit_closure_scope(message, 'example/app', 1, 'github.com')
+        chat_merge.commit_closure_scope('Fixes #1\0Fixes example/app#1\0Resolve parser bug', 'example/app', 1, 'github.com')
+        git(self.root, 'commit', '--allow-empty', '-m', 'Fixes #2')
+        self.head = git(self.root, 'rev-parse', 'HEAD'); git(self.root, 'push', 'origin', 'topic')
+        with self.assertRaisesRegex(Halt, 'Commit-message'):
+            self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+
+    def test_a_repository_keeps_its_own_configured_line_limit(self):
+        (self.root / 'value.txt').write_text('fixed\n' + 'line\n' * 800)
+        git(self.root, 'commit', '-am', 'Large fixture candidate')
+        self.head = git(self.root, 'rev-parse', 'HEAD'); git(self.root, 'push', 'origin', 'topic')
+        with self.assertRaisesRegex(Halt, 'auto_max_lines'):
+            self.call()
+        self.c['auto_max_lines'] = 1000  # A different temporary project's explicit policy.
+        write_json(self.root / '.sfc/config.json', self.c)
+        self.assertEqual(self.call()['state'], 'qualified')
+
     def test_copied_worktree_grant_cannot_override_revoked_primary_authority(self):
         child = self.root.parent / 'linked'
         git(self.root, 'worktree', 'add', '--detach', child, self.head)

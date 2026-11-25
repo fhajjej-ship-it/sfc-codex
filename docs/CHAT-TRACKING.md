@@ -80,6 +80,12 @@ Attachment warnings are reported separately from milestone sync. A missing
 badge preserves its write intent and cannot block an independently verified
 QA, Review or merged Done update.
 
+Codex records a partial PR with `--milestone-only`. Its merge records progress
+without completing the task. After verified terminal readback and pending-write
+reconciliation, the task can link its actual delivery PR; the earlier receipt is
+retained. Omitted flags and existing records retain their delivery-PR meaning.
+`--closes-issue` additionally authorizes GitHub's native closing relationship.
+
 Record Review when the change is reviewed. A genuine blocker can be recorded as
 Blocked and later followed by Building or QA. PR-required work reaches Done
 after verification of the linked merge. For local-only work, record the
@@ -121,7 +127,9 @@ require owned-candidate readback. A verified landing with an open issue reports
 an issue-closure handoff and remains short of Done. Merge authority always comes
 from the primary checkout. Gates inspect every newly reachable commit for
 sensitive paths and credentials using raw paths; unscanned historical binaries
-require a handoff. Gates revalidate execution receipts, write
+require a handoff. Commit-message closures outside the tracked issue also
+require a handoff. Child invocations observe CLI stop signals; supported macOS
+lifelines also clean them up after abrupt supervisor death. Gates revalidate execution receipts, write
 capability and live issue policy before dispatch.
 Existing configurations and custom review requirements are not migrated.
 This provider requires same-repository PRs whose sole closing issue is the tracked task, reviewed identity-bound

@@ -86,7 +86,7 @@ def view(record):
         attachment = {**(attachment or {}), 'state': 'pending',
                       'detail': record['native_pr_attachment_error']}
     return {'task': record['task'], 'title': record['title'], 'issue': record.get('issue'),
-            'delivery': record.get('delivery'), 'pr': record.get('pr'), 'pr_url': record.get('pr_url'),
+            'delivery': record.get('delivery'), 'pr_role': record.get('pr_role', 'delivery'), 'pr': record.get('pr'), 'pr_url': record.get('pr_url'),
             'pull_request': record.get('pull_request'),
             'native_pr_attachment': attachment,
             'desired_stage': latest['stage'],
@@ -168,7 +168,7 @@ def pr_target(repository, number, url):
 
 
 def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None, local_done=False,
-           closes_issue=False):
+           closes_issue=False, milestone_only=False):
     path = task_path(root, task)
     if not isinstance(event_id, str) or ID.fullmatch(event_id) is None or event_id == 'start' or stage not in STAGES:
         raise Halt('Use a new event ID and a supported chat milestone')
@@ -183,6 +183,10 @@ def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None
     event = {'id': event_id, 'stage': stage, 'summary': summary, 'pr': pr, 'pr_url': pr_url, 'local_done': local_done}
     if closes_issue:
         event['closes_issue'] = True
+    if milestone_only:
+        event['milestone_only'] = True
+    if closes_issue and milestone_only:
+        raise Halt('A PR cannot be both milestone-only and the closing delivery PR')
     with local_lock(path.with_suffix('.lock')):
         record = read_task(path, config)
         for previous in record['events']:
@@ -194,11 +198,27 @@ def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None
             raise Halt('This chat task is complete')
         bound = pr_target(config['repo'], record.get('pr'), record.get('pr_url'))
         if target and bound and target != bound:
-            raise Halt('The chat task is already tied to another pull request')
+            observed = record.get('pull_request', {})
+            if (record.get('pr_role') != 'milestone' or observed.get('state') not in ('MERGED', 'CLOSED') or
+                    record.get('chat_merge') or any(not row.get('synced') for row in record['events']) or
+                    record.get('native_pr_attachment', {}).get('state') == 'intent'):
+                raise Halt('The chat task is already tied to another pull request')
+            keys = ('pr', 'pr_url', 'pull_request', 'native_pr_attachment', 'native_pr_attachment_error', 'pr_role')
+            record.setdefault('milestone_prs', []).append({k: record[k] for k in keys if k in record})
+            for key in keys:
+                record.pop(key, None)
+            bound = None
+            record.pop('closes_issue', None)
         delivery = record.get('delivery')
         if delivery == 'local-only' and target:
             raise Halt('This task is recorded as local-only; it cannot link a pull request')
         linked = target or bound
+        if milestone_only and record.get('closes_issue'):
+            raise Halt('Preserve the existing closing relationship; it cannot become milestone-only implicitly')
+        if milestone_only and not linked:
+            raise Halt('A milestone-only event requires a linked PR')
+        if stage == 'Done' and (milestone_only or record.get('pr_role') == 'milestone' and not closes_issue):
+            raise Halt('A milestone-only PR does not complete the task; link its delivery PR')
         if closes_issue and not linked:
             raise Halt('Issue closure intent requires a recorded pull request')
         if delivery == 'pr-required' and (local_done or stage == 'Done' and not linked):
@@ -211,7 +231,10 @@ def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None
                 record['pr_url'] = pr_url
             elif pr is not None:
                 record['pr'] = pr
+        if milestone_only:
+            record['pr_role'] = 'milestone'
         if closes_issue:
+            record['pr_role'] = 'delivery'
             record['closes_issue'] = True
         record['events'].append(event)
         write_json(path, record)
@@ -485,7 +508,7 @@ def sync(gh, root, task):
                             raise Halt('Retained atomic intent does not confirm this merged candidate; maintainer handoff required')
                         record['chat_merge']['state'] = 'confirmed'
                     write_json(path, record)
-                if latest['stage'] != 'Done' and pull['state'] == 'MERGED':
+                if latest['stage'] != 'Done' and pull['state'] == 'MERGED' and record.get('pr_role') != 'milestone':
                     # Save the completion event before writing either status field.
                     completion = {'id': 'sfc:pr-merged', 'stage': 'Done', 'pr': number,
                                   'summary': 'GitHub confirmed the linked pull request merged.'}
