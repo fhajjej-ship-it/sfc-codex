@@ -97,13 +97,33 @@ def split_heredocs(command):
 def parse(text, *, strict):
     """Words and simple commands; None when strict text cannot be parsed."""
     try:
-        return shlex.split(text), (segments(text) if "push" in text else [])
+        return shlex.split(text), segments(text)
     except ValueError:
         if strict:
             return None
         # A heredoc line is free text: an apostrophe must not hide its words.
         words = text.split()
         return words, [words]
+
+
+def operands(words):
+    """Command arguments without redirections (`> file`, `2>&1`, `< in`).
+
+    Redirection targets are not arguments of the command, so a deletion
+    check must not read `/dev/null` in `rm x 2>/dev/null` as an operand.
+    """
+    result, skip = [], False
+    for index, word in enumerate(words):
+        following = words[index + 1] if index + 1 < len(words) else ""
+        if skip:
+            skip = False
+        elif word and set(word) <= set("<>&") and ("<" in word or ">" in word):
+            skip = True  # the operator's target: a file or an fd number
+        elif word.isdigit() and following[:1] in ("<", ">"):
+            continue
+        else:
+            result.append(word)
+    return result
 
 
 def scratch_roots(environ=None):
@@ -204,13 +224,15 @@ def check_words(tokens, parts, root, config, cwd, *, chat=False):
                 args.pop(0)
         if args and not inside(args[0], root / ".sfc/worktrees", cwd):
             return "SFC worktrees must live under .sfc/worktrees/"
+    # Deletions are read per simple command, like pushes: a separator attached
+    # to a word (`"a.txt";`) must not extend rm into the next command.
+    for part in parts:
+        for index, word in enumerate(part):
+            if word in ("rm", "rmdir"):
+                for operand in operands(part[index + 1:]):
+                    if not operand.startswith("-") and not inside(operand, Path(cwd), cwd):
+                        return "Deletion outside the selected worktree blocked"
     for index, token in enumerate(tokens):
-        if token in ("rm", "rmdir"):
-            for operand in tokens[index + 1:]:
-                if operand in (";", "&&", "||", "|"):
-                    break
-                if not operand.startswith("-") and not inside(operand, Path(cwd), cwd):
-                    return "Deletion outside the selected worktree blocked"
         if token == "clean" and index and tokens[index - 1] == "git":
             return "git clean requires explicit manual recovery outside factory runs"
     return None

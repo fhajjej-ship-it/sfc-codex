@@ -1255,6 +1255,30 @@ class HookTests(unittest.TestCase):
         self.assertIsNotNone(self.check_command("rm -rf ../other"))
         self.assertIsNone(self.check_command("rm -f local.txt"))
 
+    def test_delete_checks_each_command_of_a_compound_line(self):
+        allowed = ['rm -f "local.txt"; ls "/opt/other"',
+                   "rm -f a.txt && cat /etc/hosts",
+                   "rm -f a.txt;ls /opt/other",
+                   "rm -f a.txt 2>/dev/null",
+                   "rm -f a.txt > /tmp/rm.log 2>&1",
+                   "(rm -f a.txt) | tee /tmp/rm.log",
+                   "rm -f a.txt &>/dev/null && echo done"]
+        for command in allowed:
+            with self.subTest(command=command):
+                self.assertIsNone(self.check_command(command))
+        blocked = ["rm -rf ../other",
+                   "ls; rm -rf /opt/other",
+                   "echo x && rm /opt/other 2>/dev/null",
+                   "rm a.txt;rm ../b",
+                   "rm -f a.txt 2>/dev/null ../other",
+                   "rmdir ../dir",
+                   "(rm -rf /opt/other)"]
+        for command in blocked:
+            with self.subTest(command=command):
+                self.assertIsNotNone(self.check_command(command))
+        self.assertEqual(self.guard.operands(["-f", "a", "2", ">", "/dev/null", ">&", "1", "b", "<", "in"]),
+                         ["-f", "a", "b"])
+
     def test_protected_and_force_push(self):
         self.assertIsNotNone(self.check_command("git push origin HEAD:main"))
         self.assertIsNotNone(self.check_command("git push --force origin feature"))
