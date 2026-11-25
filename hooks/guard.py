@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 import shlex
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -104,6 +106,25 @@ def parse(text, *, strict):
         return words, [words]
 
 
+def scratch_roots(environ=None):
+    """OS temporary folders where Claude file tools may also write.
+
+    Scratch files and drafts belong there, not in the checkout. A root that is
+    a filesystem anchor or contains the home folder (TMPDIR=/ or ~) grants
+    nothing, so the allowance can never widen to the whole machine.
+    """
+    environ = os.environ if environ is None else environ
+    home = Path.home().resolve()
+    roots = []
+    for value in (environ.get("TMPDIR"), tempfile.gettempdir(), "/tmp"):
+        if not value:
+            continue
+        root = Path(value).expanduser().resolve()
+        if root.is_dir() and root != Path(root.anchor) and not home.is_relative_to(root) and root not in roots:
+            roots.append(root)
+    return roots
+
+
 def sensitive(path):
     return secret_problem([path], "") is not None
 
@@ -124,8 +145,8 @@ def check(event, root, config, *, chat=False):
         if not isinstance(target, str) or not target:
             return "Cannot identify the edited file for SFC literal guards"
         cwd = event.get("cwd", str(root))
-        if not inside(target, Path(cwd), cwd):
-            return "File edit escapes the selected worktree"
+        if not inside(target, Path(cwd), cwd) and not any(inside(target, r, cwd) for r in scratch_roots()):
+            return "File edit escapes the selected worktree and the temporary folders"
         if sensitive(target):
             return "Credential file edit blocked"
         edits = data.get("edits") if isinstance(data.get("edits"), list) else []

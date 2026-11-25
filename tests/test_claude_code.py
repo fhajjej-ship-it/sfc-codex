@@ -97,7 +97,7 @@ class ClaudeAttachmentTests(unittest.TestCase):
 
     def test_pre_tool_use_denies_claude_edits_outside_the_checkout(self):
         event = {'hook_event_name': 'PreToolUse', 'session_id': 'claude-session', 'cwd': str(self.root),
-                 'tool_name': 'Write', 'tool_input': {'file_path': '/tmp/sfc-outside.txt', 'content': 'x'}}
+                 'tool_name': 'Write', 'tool_input': {'file_path': str(Path.home() / '.sfc-outside.txt'), 'content': 'x'}}
         denied = hook(['--host=claude'], event, self.root)['hookSpecificOutput']
         self.assertEqual(denied['permissionDecision'], 'deny')
         self.assertIn('escapes', denied['permissionDecisionReason'])
@@ -120,12 +120,36 @@ class ClaudeGuardTests(unittest.TestCase):
         secret = "key='sk-" + 'x' * 30 + "'"
         self.assertIsNone(self.check('Write', {'file_path': '/tmp/project/a.py', 'content': 'x = 1\n'}))
         self.assertIsNone(self.check('Edit', {'file_path': 'a.py', 'old_string': 'a', 'new_string': 'b'}))
-        self.assertIsNotNone(self.check('Write', {'file_path': '/tmp/elsewhere/a.py', 'content': ''}))
+        self.assertIsNotNone(self.check('Write', {'file_path': '/opt/sfc-elsewhere/a.py', 'content': ''}))
         self.assertIsNotNone(self.check('Edit', {'file_path': '/tmp/project/.env', 'old_string': 'a', 'new_string': 'b'}))
         self.assertIsNotNone(self.check('Write', {'file_path': 'a.py', 'content': secret}))
         self.assertIsNotNone(self.check('MultiEdit', {'file_path': 'a.py', 'edits': [{'old_string': 'a', 'new_string': secret}]}))
-        self.assertIsNotNone(self.check('NotebookEdit', {'notebook_path': '/tmp/elsewhere/n.ipynb', 'new_source': ''}))
+        self.assertIsNotNone(self.check('NotebookEdit', {'notebook_path': '/opt/sfc-elsewhere/n.ipynb', 'new_source': ''}))
         self.assertIsNotNone(self.check('Write', {'content': 'x'}))
+
+    def test_temporary_folders_accept_scratch_writes_only(self):
+        secret = "key='sk-" + 'x' * 30 + "'"
+        with tempfile.TemporaryDirectory() as scratch:
+            draft = str(Path(scratch) / 'nested' / 'draft.md')
+            self.assertIsNone(self.check('Write', {'file_path': draft, 'content': 'notes\n'}))
+            self.assertIsNone(self.check('Edit', {'file_path': draft, 'old_string': 'a', 'new_string': 'b'}))
+            self.assertIsNone(self.check('Write', {'file_path': '/tmp/sfc-scratch.txt', 'content': 'x'}))
+            self.assertIsNotNone(self.check('Write', {'file_path': str(Path(scratch) / '.env'), 'content': 'x'}))
+            self.assertIsNotNone(self.check('Write', {'file_path': draft, 'content': secret}))
+            # A link inside a temporary folder cannot reach the home folder.
+            link = Path(scratch) / 'home-link'
+            link.symlink_to(Path.home())
+            self.assertIsNotNone(self.check('Write', {'file_path': str(link / '.sfc-probe'), 'content': 'x'}))
+        self.assertIsNotNone(self.check('Write', {'file_path': str(Path.home() / '.sfc-probe'), 'content': 'x'}))
+
+    def test_broad_tmpdir_values_grant_nothing(self):
+        home = Path.home().resolve()
+        for value in ('/', str(Path.home()), str(home.parent)):
+            with self.subTest(value=value):
+                roots = self.guard.scratch_roots({'TMPDIR': value})
+                self.assertNotIn(Path('/'), roots)
+                self.assertFalse(any(home.is_relative_to(root) for root in roots))
+        self.assertIn(Path(tempfile.gettempdir()).resolve(), self.guard.scratch_roots({}))
 
     def test_bash_guards_are_shared(self):
         self.assertIsNotNone(self.check('Bash', {'command': 'git push --force origin feature'}))
