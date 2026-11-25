@@ -124,12 +124,71 @@ class ChatMergeTests(unittest.TestCase):
         self.gh.items[0]['status'] = 'Review'
         # Seed the fake board's verified Review/attachment checkpoint.
         record = read_json(self.path)
+        record['board_stage'] = 'Review'
         for event in record['events']:
             event['synced'] = 'fixture-checkpoint'
         record['native_pr_attachment'] = {'state': 'verified', 'binding': {
             'issue': self.gh.items[0]['id'], 'pull_request': 'pr-node-101', 'base': 'main',
             'url': 'https://github.com/example/app/pull/101'}}
         write_json(self.path, record)
+
+    def test_other_closing_issues_require_handoff_before_spending_or_writing(self):
+        def extra(snapshot):
+            refs = snapshot['pullRequest']['closingIssuesReferences']
+            refs['nodes'].append({'id': 'human-only-issue'})
+            refs['totalCount'] += 1
+        self.gh.edit_snapshot = extra
+        with self.assertRaisesRegex(Halt, 'sole closing reference'):
+            self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
+        self.gh.edit_snapshot = None
+        self.reviewed()
+        self.gh.edit_snapshot = extra
+        with self.assertRaisesRegex(Halt, 'sole closing reference'):
+            self.call(apply=True)
+        self.assertEqual(self.gh.attempts, [])
+
+    def test_deleted_head_after_owned_merge_uses_immutable_pr_and_base_evidence(self):
+        self.reviewed(); self.call(apply=True)
+        git(self.remote, 'update-ref', '-d', 'refs/heads/topic')
+        self.gh.protected = {'id': 'new-rule'}  # No further ref write is needed.
+        self.assertEqual(self.call(apply=True)['state'], 'merged')
+        self.assertEqual(len(self.gh.attempts), 1)
+        self.gh.prs[101]['mergeCommit'] = {'oid': self.base}
+        self.assertEqual(self.call(apply=True)['state'], 'uncertain')
+        self.assertEqual(len(self.gh.attempts), 1)
+
+    def test_deleted_head_before_dispatch_still_fails_closed(self):
+        self.reviewed()
+        git(self.remote, 'update-ref', '-d', 'refs/heads/topic')
+        with self.assertRaisesRegex(Halt, 'identity'):
+            self.call(apply=True)
+        self.assertEqual(self.gh.attempts, [])
+
+    def test_external_merge_after_known_unsent_attempt_completes_without_new_execution(self):
+        self.reviewed()
+        original = chat_merge.write_json
+        def stop_before_send(path, record):
+            original(path, record)
+            if record.get('chat_merge', {}).get('state') == 'dispatching':
+                (common_dir(self.root) / 'sfc-stop').touch()
+        with patch.object(chat_merge, 'write_json', side_effect=stop_before_send), self.assertRaises(Halt):
+            self.call(apply=True)
+        saved = read_json(self.path)
+        self.assertEqual(saved['chat_merge']['state'], 'not-dispatched')
+        # A human can land a different candidate after the definitely-unsent attempt.
+        self.gh.prs[101].update(state='MERGED', mergeCommit={'oid': self.base})
+        self.gh.chat_pr = lambda number: self.gh.pr(number)
+        self.gh.github_status['item-1'] = 'in-progress'
+        with patch.object(chat_tracking, 'sync_pr_attachment'), patch.object(chat_tracking, 'sync_note'):
+            result = chat_tracking.sync(self.gh, self.root, self.task)
+            again = chat_tracking.sync(self.gh, self.root, self.task)
+        self.assertEqual((result['state'], result['board_stage'], again['state']), ('synced', 'Done', 'synced'))
+        self.assertEqual(self.gh.github_status['item-1'], 'done')
+        retained = read_json(self.path)
+        self.assertEqual(retained['chat_merge'], saved['chat_merge'])
+        self.assertEqual(retained['delivery_attempts'], saved['delivery_attempts'])
+        self.assertEqual(self.gh.attempts, [])
 
     def test_a_second_preparation_on_identical_inputs_keeps_the_selected_original_proof(self):
         normal = self.processes.mutate

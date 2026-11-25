@@ -319,7 +319,7 @@ format. Do not pass incomplete or unsupported obligations.
                                            stdout=output, stderr=subprocess.STDOUT,
                                            text=True, encoding='utf-8' if worker_prompt else None,
                                            start_new_session=True,
-                                           env={**os.environ, "SFC_WORKER": "1",
+                                           env={**os.environ, "PWD": str(Path(cwd).resolve()), "SFC_WORKER": "1",
                                                 **({"PYTHONDONTWRITEBYTECODE": "1"} if worker_events else {})})
             except OSError as exc:
                 raise Halt(f"Cannot start {argv[0]}: {exc}") from exc

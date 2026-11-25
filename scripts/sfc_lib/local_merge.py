@@ -28,7 +28,7 @@ class LocalMerge:
         return f.gh.local_merge_snapshot(intent["pr"], card["number"],
                                          intent["base_ref"], intent["head_ref"])
 
-    def identity(self, card, intent, snapshot):
+    def identity(self, card, intent, snapshot, *, completion=False):
         """Fail closed on absent/partial identity or rules inventories."""
         f = self.f
         try:
@@ -46,7 +46,10 @@ class LocalMerge:
                      pr["baseRefName"] == f.c["base_branch"] and
                      pr["headRepository"] == {"id": snapshot["id"], "nameWithOwner": repo} and
                      pr["baseRepository"] == pr["headRepository"])
-            for key in ("head", "base"):
+            # After a merge, the PR retains its immutable head/merge OIDs even
+            # if GitHub deletes the topic ref. Completion performs no ref write.
+            refs = ('base',) if completion and pr['state'] == 'MERGED' else ('head', 'base')
+            for key in refs:
                 ref = snapshot[key]
                 valid = valid and (ref["id"] and ref["prefix"] + ref["name"] == intent[key + "_ref"] and
                                    ref["target"]["__typename"] == "Commit" and
@@ -54,17 +57,17 @@ class LocalMerge:
                                    re.fullmatch(r"[0-9a-f]{40}", ref["target"]["tree"]["oid"]))
                 # Avoid even an administrator's implicit rule bypass. This mode
                 # is deliberately limited to refs with no active rules.
-                if (ref["branchProtectionRule"] is not None or
+                if not completion and (ref["branchProtectionRule"] is not None or
                         type(ref["rules"]["totalCount"]) is not int or ref["rules"]["totalCount"] != 0):
                     raise Halt("Local verification refuses protected/ruled refs; use human or github-protected mode")
             if intent.get("repository_id") and (snapshot["id"] != intent["repository_id"] or
                     pr["id"] != intent["pr_id"] or
-                    any(snapshot[k]["id"] != intent[k + "_id"] for k in ("head", "base"))):
+                    any(snapshot[k]["id"] != intent[k + "_id"] for k in refs)):
                 valid = False
             closing = pr["closingIssuesReferences"]
-            valid = valid and (type(closing["totalCount"]) is int and
+            valid = valid and (completion or (type(closing["totalCount"]) is int and
                                closing["totalCount"] == len(closing["nodes"]) and
-                               card["id"] in [v["id"] for v in closing["nodes"]])
+                               card["id"] in [v["id"] for v in closing["nodes"]]))
         except (KeyError, TypeError, AttributeError):
             valid = False
         if not valid:

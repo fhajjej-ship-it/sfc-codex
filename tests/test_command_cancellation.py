@@ -13,6 +13,20 @@ from sfc_lib.common import CommandCancelled, Processes, command_cancellation
 
 
 class CancellationTests(unittest.TestCase):
+    def test_children_receive_the_actual_checkout_pwd_not_the_callers(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name).resolve()
+            processes = Processes(root / 'stop')
+            command = [sys.executable, '-c',
+                       'import os; from pathlib import Path; assert Path(os.environ["PWD"]).resolve() == Path.cwd()']
+            for inherited in (None, '/stale/caller/path'):
+                with self.subTest(inherited=inherited), patch.dict(os.environ):
+                    if inherited is None:
+                        os.environ.pop('PWD', None)
+                    else:
+                        os.environ['PWD'] = inherited
+                    self.assertEqual(processes.execute(command, root, root / 'pwd.log', 5), 0)
+
     def test_worker_python_imports_do_not_leave_bytecode_in_the_checkout(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

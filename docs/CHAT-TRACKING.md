@@ -114,9 +114,12 @@ with complete inventories and the live PR/issue/refs checked last. A known
 pre-dispatch failure retains its history and may use the remaining preparation
 allowance; it does not receive a refund. Native CLI capability is checked before
 reservation. Completion requires the matching closed issue, including after a
-later base advance.
+later base advance or deletion of the merged topic branch. A definitely unsent
+attempt can also follow an externally verified human merge through ordinary
+tracking; its original proof and spending stay intact. Unknown writes still
+require owned-candidate readback.
 Existing configurations and custom review requirements are not migrated.
-This provider requires same-repository closing PRs, reviewed identity-bound
+This provider requires same-repository PRs whose sole closing issue is the tracked task, reviewed identity-bound
 consent and unprotected/unruled default-branch refs; unavailable capabilities are
 explicit in onboarding and doctor, with a maintainer handoff. It changes no
 repository protections and starts no builder or queue watcher.

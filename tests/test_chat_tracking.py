@@ -112,6 +112,28 @@ class ChatTrackingTests(unittest.TestCase):
     def sync(self):
         return chat_tracking.sync(self.gh, self.root, self.task)
 
+    def test_guard_rejected_unsent_note_can_retry_but_unknown_post_is_readback_only(self):
+        self.start()
+        path = chat_tracking.task_path(self.root, self.task)
+        record = read_json(path)
+        record['issue'] = {'number': 1}
+        event = {'id': 'done-note', 'stage': 'Done', 'summary': 'GitHub verified merge'}
+        record['events'].append(event)
+        with self.assertRaisesRegex(Halt, 'guard rejected'):
+            chat_tracking.sync_note(self.gh, path, record, event, None,
+                                    guard=lambda: (_ for _ in ()).throw(Halt('guard rejected')))
+        self.assertEqual(read_json(path)['events'][-1]['note'], 'unsent')
+        self.assertEqual(self.gh.comments, [])
+        self.gh.lose_note_response = True
+        with self.assertRaisesRegex(Halt, 'dropped'):
+            chat_tracking.sync_note(self.gh, path, record, event, None)
+        self.assertEqual(read_json(path)['events'][-1]['note'], 'intent')
+        self.assertEqual(len(self.gh.comments), 1)
+        self.gh.lose_note_response = False
+        chat_tracking.sync_note(self.gh, path, record, event, None)
+        self.assertEqual(event['note'], 'verified')
+        self.assertEqual(len(self.gh.comments), 1)
+
     def test_records_a_single_issue_and_tracks_only_observed_milestones(self):
         self.gh.github_status['item-1'] = 'in-progress'
         with exclusive(self.root):

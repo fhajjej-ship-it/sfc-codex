@@ -91,6 +91,9 @@ class Delivery:
             raise Halt('Reviewed repository identity changed')
         if snapshot['defaultBranchRef']['name'] != self.c['base_branch']:
             raise Halt('The delivery base is not the live default branch; maintainer handoff required')
+        if (pr['closingIssuesReferences']['totalCount'] != 1 or
+                [node['id'] for node in pr['closingIssuesReferences']['nodes']] != [self.card['id']]):
+            raise Halt('Automatic delivery requires the tracked issue to be the sole closing reference; maintainer handoff required')
         self.refs = {'repository': snapshot['id'], 'pr': pr['id'],
                      **{key: snapshot[key]['id'] for key in ('head', 'base')}}
         return snapshot, pr, issue
@@ -269,7 +272,7 @@ class Delivery:
             if (self.record['chat_merge']['head'], self.record['chat_merge']['base']) != (self.head, self.base):
                 raise Halt('Retained merge pins changed; inspect without another write')
             if self.record['chat_merge']['state'] == 'not-dispatched':
-                return {'state': 'not-dispatched', 'detail': 'Prepare again within the remaining allowance; original spending is retained'}
+                return {'state': 'not-dispatched', 'detail': 'Sync an external merge, or prepare within the remaining allowance; spending is retained'}
             landed = confirmed(self.gh, self.root, self.record)
             return {'state': 'merged' if landed else 'uncertain', 'detail': 'Readback only; merge writes are never repeated'}
         intent, pr = self.candidate(ready=True)
@@ -319,7 +322,7 @@ class Delivery:
         if proof['binding'] != self.binding() or not self.fresh(proof):
             raise Halt('Final verification inputs changed; repeat qualified preparation')
         intent.update(state='dispatching', dispatch_at=now(), time=now(), binding=proof['binding'],
-                      preparation_id=proof['intent']['id'], ci=ci)
+                      preparation_id=proof['intent']['id'], ci=ci, closing_issues=[self.card['id']])
         self.record['chat_merge'] = intent
         write_json(self.path, self.record)  # Durable proof that the final gates actually passed.
         try:
@@ -372,7 +375,9 @@ def confirmed(gh, root, record):
         raise Halt('Tracked issue changed before merge completion')
     snapshot = gh.local_merge_snapshot(intent['pr'], card['number'], intent['base_ref'], intent['head_ref'])
     local = LocalMerge(SimpleNamespace(c=gh.c, watcher=None))
-    pr, issue = local.identity(card, intent, snapshot)
+    pr, issue = local.identity(card, intent, snapshot, completion=True)
+    if intent.get('closing_issues') != [card['id']]:
+        raise Halt('The original closing-issue scope is missing; retain the intent for maintainer inspection')
     if (pr['state'] != 'MERGED' or pr['headRefOid'] != intent['head'] or
             (pr.get('mergeCommit') or {}).get('oid') != intent['head'] or issue['state'] != 'CLOSED'):
         return False

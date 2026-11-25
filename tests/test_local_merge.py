@@ -57,20 +57,24 @@ class AtomicGitHub(PickupGitHub):
 
     def local_merge_snapshot(self, number, issue, base, head):
         def ref(name):
+            if run(['git', 'show-ref', '--verify', '--quiet', name], self.remote, check=False).returncode:
+                return None
             oid = self.oid(name)
             return {"id": name, "prefix": "refs/heads/", "name": name.removeprefix("refs/heads/"),
                     "target": {"__typename": "Commit", "oid": oid,
                                "tree": {"oid": self.oid(oid + "^{tree}")}},
                     "branchProtectionRule": self.protected, "rules": {"totalCount": self.rules}}
         pr = self.pr(number)
+        head_ref, base_ref = ref(head), ref(base)
         repo = {"id": "repo-node", "nameWithOwner": "example/app"}
         item = next(c for c in self.items if c["number"] == issue)
-        pr.update(id=f"pr-node-{number}", headRefOid=self.oid(head), baseRefOid=self.oid(base),
+        pr.update(id=f"pr-node-{number}", headRefOid=head_ref['target']['oid'] if head_ref else pr['headRefOid'],
+                  baseRefOid=base_ref['target']['oid'] if base_ref else None,
                   headRepository=repo.copy(), baseRepository=repo.copy(),
                   mergeCommit=pr.get("mergeCommit"),
                   closingIssuesReferences={"totalCount": 1, "nodes": [{"id": item["id"]}]})
         snapshot = {**repo, "isArchived": False, "viewerPermission": "WRITE",
-                    "head": ref(head), "base": ref(base), "pullRequest": pr,
+                    "head": head_ref, "base": base_ref, "pullRequest": pr,
                     "issue": {k: item[k] for k in ("id", "number", "url", "state", "repository")}}
         if self.edit_snapshot:
             self.edit_snapshot(snapshot)

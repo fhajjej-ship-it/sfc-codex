@@ -337,8 +337,13 @@ def sync_note(gh, path, record, event, pr_url, *, guard=None):
     else:
         event['note'] = 'intent'
         write_json(path, record)
-        if guard:
-            guard()
+        try:
+            if guard:
+                guard()
+        except BaseException:
+            event['note'] = 'unsent'
+            write_json(path, record)
+            raise
         result = gh.call('api', endpoint, '--method', 'POST', '--input', '-', input=json.dumps({'body': body}))
         if not result.get('id') or result.get('body') != body:
             raise Halt('The milestone note response did not match')
@@ -435,10 +440,13 @@ def sync(gh, root, task):
                 else:
                     record.pop('native_pr_attachment_error', None)
                 if pull['state'] == 'MERGED' and record.get('chat_merge') and not completed:
-                    from .chat_merge import confirmed
-                    if not confirmed(gh, root, record):
-                        raise Halt('Retained atomic intent does not confirm this merged candidate; maintainer handoff required')
-                    record['chat_merge']['state'] = 'confirmed'
+                    if record['chat_merge']['state'] == 'not-dispatched':
+                        record['manual_merge_completion'] = dict(pull)
+                    else:
+                        from .chat_merge import confirmed
+                        if not confirmed(gh, root, record):
+                            raise Halt('Retained atomic intent does not confirm this merged candidate; maintainer handoff required')
+                        record['chat_merge']['state'] = 'confirmed'
                     write_json(path, record)
                 if latest['stage'] != 'Done' and pull['state'] == 'MERGED':
                     # Save the completion event before writing either status field.
@@ -460,7 +468,8 @@ def sync(gh, root, task):
                 if event.get('closing_pr_url') and card['state'] != 'CLOSED':
                     raise Halt('The tracked issue reopened before Done synced')
                 guard = None
-                if event['stage'] == 'Done' and record.get('chat_merge'):
+                if (event['stage'] == 'Done' and record.get('chat_merge') and
+                        record['chat_merge']['state'] != 'not-dispatched'):
                     from .chat_merge import completion_guard
                     guard = lambda: completion_guard(root, record, gh)
                 sync_stage(gh, path, record, card, event, guard=guard)
