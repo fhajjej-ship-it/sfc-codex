@@ -1,5 +1,6 @@
 """Chat milestones use a local outbox and fake Project reads/writes."""
 from contextlib import redirect_stderr, redirect_stdout
+import copy
 import io
 import json
 import os
@@ -12,7 +13,7 @@ import test_factory as fixtures
 import sfc
 from test_pickup import PickupGitHub, ticket
 from sfc_lib import autostart, chat_tracking
-from sfc_lib.common import Halt, common_dir, exclusive, git, load_config, read_json, run, write_json
+from sfc_lib.common import NotDispatched, _owned_io, Halt, common_dir, exclusive, git, load_config, read_json, run, write_json
 from sfc_lib.github import GitHub
 from sfc_lib.session_runtime import SessionRuntime, request_attachment
 from sfc_lib.ticket_coordination import ticket_directory
@@ -34,6 +35,26 @@ class TrackingGitHub(PickupGitHub):
         self.pr_visibility = 'PUBLIC'
         self.closing_links = {'totalCount': 0, 'nodes': []}
         self.closer = None
+        self.native_refs = []
+        self.native_writes = []
+        self.lose_attachment_response = False
+        self.skip_attachment_write = False
+
+    def chat_pr_attachment(self, issue, repository, number):
+        pr_id = repository + ':' + str(number)
+        references = self.native_refs.copy()
+        if any(pr.get('number') == number for pr in self.closing_links['nodes']) and pr_id not in references:
+            references.append(pr_id)
+        return {'issue': issue['id'], 'pull_request': pr_id,
+                'url': f'https://github.com/{repository}/pull/{number}', 'base': self.c['base_branch'],
+                'references': sorted(references)}
+
+    def attach_chat_pr(self, issue_id, pr_id):
+        self.native_writes.append((issue_id, pr_id))
+        if not self.skip_attachment_write:
+            self.native_refs.append(pr_id)
+        if self.lose_attachment_response:
+            raise Halt('Fixture lost the native attachment response')
 
     def graphql(self, query, variables):
         if 'issueRepo:repository' in query:
@@ -90,6 +111,101 @@ class ChatTrackingTests(unittest.TestCase):
 
     def sync(self):
         return chat_tracking.sync(self.gh, self.root, self.task)
+
+    def test_uncertain_routing_done_is_readback_only_with_delayed_visibility(self):
+        self.uncertain_done_field('routing')
+
+    def test_uncertain_standard_done_is_readback_only_with_delayed_visibility(self):
+        self.uncertain_done_field('standard')
+
+    def uncertain_done_field(self, field):
+        self.task = 'uncertain-done-' + field
+        self.gh.items[0]['status'] = 'Backlog'
+        self.gh.github_status['item-1'] = 'in-progress'
+        self.gh.pull['state'] = 'OPEN'
+        self.start(); self.update('review', 'Review', pr=41); self.sync()
+        self.gh.pull['state'] = 'MERGED'
+        attempts = []
+        def unknown(*args):
+            attempts.append(args)
+            raise Halt('Fixture lost field response; readback still shows old value')
+        with patch.object(self.gh, 'move' if field == 'routing' else 'write_done_status', side_effect=unknown):
+            self.assertEqual(self.sync()['state'], 'pending')
+            second = self.sync()
+            self.assertEqual(second['state'], 'pending')
+            self.assertIn('readback', second['detail'])
+        self.assertEqual(len(attempts), 1)
+        if field == 'routing':
+            self.gh.items[0]['status'] = 'Done'
+        else:
+            self.gh.github_status['item-1'] = 'done'
+        self.assertEqual(self.sync()['state'], 'synced')
+        self.assertEqual(self.gh.github_status['item-1'], 'done')
+
+
+    def test_sync_owns_io_even_when_the_factory_is_paused(self):
+        self.start(); self.update('review', 'Review', pr=41)
+        (self.root / '.sfc/stop').touch()
+        original = self.gh.chat_pr
+        def observed(*args, **kwargs):
+            self.assertIsNotNone(_owned_io.get())
+            return original(*args, **kwargs)
+        with patch.object(self.gh, 'chat_pr', side_effect=observed):
+            self.assertEqual(self.sync()['state'], 'synced')
+        self.assertIsNone(_owned_io.get())
+
+    def test_definitely_unsent_done_write_can_retry(self):
+        self.start(); self.update('review', 'Review', pr=41); self.sync()
+        self.gh.pull['state'] = 'MERGED'
+        with patch.object(self.gh, 'move', side_effect=NotDispatched('Stopped before spawn')):
+            self.assertEqual(self.sync()['state'], 'pending')
+        record = read_json(chat_tracking.task_path(self.root, self.task))
+        self.assertEqual(record['events'][-1]['routing_write']['state'], 'unsent')
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+
+    def test_definitely_unsent_note_and_attachment_can_retry(self):
+        self.start(); self.update('review', 'Review', pr=41, closes_issue=True)
+        with patch.object(self.gh, 'attach_chat_pr', side_effect=NotDispatched('Stopped before spawn')):
+            self.sync()
+        path = chat_tracking.task_path(self.root, self.task)
+        self.assertEqual(read_json(path)['native_pr_attachment']['state'], 'unsent')
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'verified')
+        self.assertEqual(len(self.gh.native_writes), 1)
+        record = read_json(path)
+        event = {'id': 'known-unsent-note', 'stage': 'Done', 'summary': 'Verified merge'}
+        record['events'].append(event)
+        original = self.gh.call
+        def no_post(*args, **kwargs):
+            if '--method' in args:
+                raise NotDispatched('Stopped before spawn')
+            return original(*args, **kwargs)
+        with patch.object(self.gh, 'call', side_effect=no_post), self.assertRaises(NotDispatched):
+            chat_tracking.sync_note(self.gh, path, record, event, None)
+        self.assertEqual(read_json(path)['events'][-1]['note'], 'unsent')
+        chat_tracking.sync_note(self.gh, path, record, event, None)
+        self.assertEqual(event['note'], 'verified')
+
+    def test_guard_rejected_unsent_note_can_retry_but_unknown_post_is_readback_only(self):
+        self.start()
+        path = chat_tracking.task_path(self.root, self.task)
+        record = read_json(path)
+        record['issue'] = {'number': 1}
+        event = {'id': 'done-note', 'stage': 'Done', 'summary': 'GitHub verified merge'}
+        record['events'].append(event)
+        with self.assertRaisesRegex(Halt, 'guard rejected'):
+            chat_tracking.sync_note(self.gh, path, record, event, None,
+                                    guard=lambda: (_ for _ in ()).throw(Halt('guard rejected')))
+        self.assertEqual(read_json(path)['events'][-1]['note'], 'unsent')
+        self.assertEqual(self.gh.comments, [])
+        self.gh.lose_note_response = True
+        with self.assertRaisesRegex(Halt, 'dropped'):
+            chat_tracking.sync_note(self.gh, path, record, event, None)
+        self.assertEqual(read_json(path)['events'][-1]['note'], 'intent')
+        self.assertEqual(len(self.gh.comments), 1)
+        self.gh.lose_note_response = False
+        chat_tracking.sync_note(self.gh, path, record, event, None)
+        self.assertEqual(event['note'], 'verified')
+        self.assertEqual(len(self.gh.comments), 1)
 
     def test_records_a_single_issue_and_tracks_only_observed_milestones(self):
         self.gh.github_status['item-1'] = 'in-progress'
@@ -157,6 +273,180 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.sync(), done)
         self.assertEqual(self.gh.comments, notes)
         self.assertEqual(self.gh.pr_reads, [41, 41, 41, 41])
+
+    def test_partial_merge_stays_open_and_can_link_the_actual_delivery_pr(self):
+        self.start()
+        self.update('partial', 'QA', pr=41, milestone_only=True)
+        self.sync()
+        with self.assertRaisesRegex(Halt, 'milestone PR'):
+            self.update('promote-stale-open-partial', 'Review', closes_issue=True)
+        self.gh.pull['state'] = 'MERGED'
+        partial = self.sync()
+        self.assertEqual((partial['board_stage'], partial['pr_role']), ('QA', 'milestone'))
+        self.assertNotIn((1, 'Done'), self.gh.writes)
+        with self.assertRaisesRegex(Halt, 'milestone PR'):
+            self.update('promote-finished-partial', 'Done', closes_issue=True)
+        with self.assertRaisesRegex(Halt, 'milestone-only'):
+            self.update('premature', 'Done')
+        self.gh.pull.update(number=42, url='https://github.com/example/app/pull/42', state='OPEN')
+        self.update('delivery', 'Review', pr=42, closes_issue=True)
+        self.sync()
+        record = read_json(chat_tracking.task_path(self.root, self.task))
+        self.assertEqual((record['pr'], record['milestone_prs'][0]['pr']), (42, 41))
+        self.assertEqual(record['milestone_prs'][0]['pull_request']['state'], 'MERGED')
+        self.gh.pull['state'] = 'MERGED'
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+
+    def test_an_archived_partial_pr_cannot_become_delivery_after_another_partial(self):
+        self.start(); self.update('partial-1', 'QA', pr=41, milestone_only=True); self.sync()
+        self.gh.pull['state'] = 'MERGED'; self.sync()
+        self.gh.pull.update(number=42, url='https://github.com/example/app/pull/42', state='OPEN')
+        self.update('partial-2', 'QA', pr=42, milestone_only=True); self.sync()
+        self.gh.pull['state'] = 'CLOSED'; self.sync()
+        for index, kwargs in enumerate(({}, {'closes_issue': True})):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(Halt, 'archived milestone'):
+                self.update('stale-reuse-' + str(index), 'Review', pr=41, **kwargs)
+        record = read_json(chat_tracking.task_path(self.root, self.task))
+        self.assertEqual(record['pr'], 42)
+        self.assertEqual(record['milestone_prs'][0]['pr'], 41)
+        self.assertNotIn((1, 'Done'), self.gh.writes)
+
+    def test_partial_pr_with_uncertain_notes_cannot_be_replaced(self):
+        self.start(); self.update('partial', 'QA', pr=41, milestone_only=True)
+        self.gh.pull['state'] = 'MERGED'; self.gh.lose_note_response = True
+        self.assertEqual(self.sync()['state'], 'pending')
+        with self.assertRaisesRegex(Halt, 'already tied'):
+            self.update('delivery', 'Review', pr=42, closes_issue=True)
+        record = read_json(chat_tracking.task_path(self.root, self.task))
+        self.assertEqual(record['pr'], 41)
+        self.assertNotIn('milestone_prs', record)
+
+    def test_milestone_pr_does_not_authorize_issue_closure(self):
+        self.start()
+        self.update('partial', 'QA', pr=41)
+        self.assertEqual(self.sync()['board_stage'], 'QA')
+        self.assertEqual(self.gh.native_writes, [])
+        self.update('complete-scope', 'Review', closes_issue=True)
+        self.sync()
+        self.assertEqual(len(self.gh.native_writes), 1)
+
+    def test_closure_intent_requires_a_recorded_pr(self):
+        self.start()
+        with self.assertRaises(Halt):
+            self.update('closure-without-pr', 'QA', closes_issue=True)
+        self.assertEqual(len(read_json(chat_tracking.task_path(self.root, self.task))['events']), 1)
+
+    def test_explicit_sync_detects_unlink_after_done_without_reopening_or_rewriting(self):
+        self.start()
+        self.update('draft', 'QA', pr=41, closes_issue=True)
+        self.sync()
+        self.gh.pull['state'] = 'MERGED'
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+        notes, writes = self.gh.comments.copy(), self.gh.writes.copy()
+        self.gh.native_refs.clear()
+        checked = self.sync()
+        self.assertEqual(checked['board_stage'], 'Done')
+        self.assertEqual(checked['native_pr_attachment']['state'], 'pending')
+        self.assertEqual((self.gh.comments, self.gh.writes), (notes, writes))
+        self.assertEqual(len(self.gh.native_writes), 1)
+
+    def test_native_attachment_is_saved_and_repeated_sync_does_not_write_again(self):
+        self.start()
+        self.update('draft', 'QA', pr=41, closes_issue=True)
+        self.assertEqual(self.sync()['state'], 'synced')
+        self.assertEqual(self.gh.native_writes, [(self.gh.items[0]['id'], 'example/app:41')])
+        self.assertEqual(self.sync()['state'], 'synced')
+        self.assertEqual(len(self.gh.native_writes), 1)
+
+    def test_lost_attachment_response_is_read_back_without_a_second_write(self):
+        self.start()
+        self.update('draft', 'QA', pr=41, closes_issue=True)
+        self.gh.lose_attachment_response = True
+        waiting = self.sync()
+        self.assertEqual((waiting['state'], waiting['board_stage']), ('synced', 'QA'))
+        self.assertEqual(waiting['native_pr_attachment']['state'], 'pending')
+        self.gh.lose_attachment_response = False
+        self.assertEqual(self.sync()['state'], 'synced')
+        self.assertEqual(len(self.gh.native_writes), 1)
+
+    def test_missing_attachment_readback_preserves_the_original_intent(self):
+        self.start()
+        self.update('draft', 'QA', pr=41, closes_issue=True)
+        self.gh.skip_attachment_write = True
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
+        self.gh.skip_attachment_write = False
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
+        self.assertEqual(len(self.gh.native_writes), 1)
+
+    def test_external_native_unlink_is_preserved(self):
+        self.start()
+        self.update('draft', 'QA', pr=41, closes_issue=True)
+        self.assertEqual(self.sync()['state'], 'synced')
+        self.gh.native_refs.clear()
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
+        self.assertEqual(len(self.gh.native_writes), 1)
+
+    def test_removed_attachment_does_not_block_verified_milestones_or_merge_completion(self):
+        self.start()
+        self.update('draft', 'QA', pr=41, closes_issue=True)
+        self.sync()
+        self.gh.native_refs.clear()
+        self.update('reviewed', 'Review')
+        review = self.sync()
+        self.assertEqual(review['board_stage'], 'Review')
+        self.assertEqual(review['native_pr_attachment']['state'], 'pending')
+        self.gh.pull['state'] = 'MERGED'
+        done = self.sync()
+        self.assertEqual((done['state'], done['board_stage']), ('synced', 'Done'))
+        self.assertEqual(done['native_pr_attachment']['state'], 'pending')
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+        self.assertEqual(len(self.gh.native_writes), 1)
+        self.gh.native_refs.append('example/app:41')
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'verified')
+
+    def test_ten_existing_native_attachments_are_preserved(self):
+        self.start()
+        self.update('draft', 'QA', pr=41, closes_issue=True)
+        self.gh.native_refs = ['other-' + str(number) for number in range(10)]
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
+        self.assertEqual(self.gh.native_writes, [])
+
+    def test_native_reference_drift_before_write_does_not_attach(self):
+        self.start()
+        self.update('draft', 'QA', pr=41, closes_issue=True)
+        observe = self.gh.chat_pr_attachment
+        reads = 0
+
+        def changed(*args):
+            nonlocal reads
+            reads += 1
+            value = observe(*args)
+            if reads == 2:
+                value['references'].append('concurrent-pr')
+            return value
+
+        with patch.object(self.gh, 'chat_pr_attachment', side_effect=changed):
+            self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
+        self.assertEqual(self.gh.native_writes, [])
+
+    def test_native_attachment_transport_checks_identity_and_pagination(self):
+        issue = {'id': 'I1', 'number': 1}
+        payload = {'issue': {**issue, 'repository': {'nameWithOwner': 'example/app'},
+                             'closedByPullRequestsReferences': {'totalCount': 0, 'nodes': [],
+                                                               'pageInfo': {'hasNextPage': False}}},
+                   'repository': {'nameWithOwner': 'example/code', 'pullRequest': {
+                       'id': 'PR41', 'number': 41, 'url': 'https://github.com/example/code/pull/41',
+                       'baseRefName': 'main'}}}
+        with patch.object(self.gh, 'graphql', side_effect=lambda *args: copy.deepcopy(payload)):
+            observed = GitHub.chat_pr_attachment(self.gh, issue, 'example/code', 41)
+            self.assertEqual(observed['pull_request'], 'PR41')
+            payload['issue']['closedByPullRequestsReferences']['pageInfo']['hasNextPage'] = True
+            with self.assertRaisesRegex(Halt, 'complete reference inventory'):
+                GitHub.chat_pr_attachment(self.gh, issue, 'example/code', 41)
+            payload['issue']['closedByPullRequestsReferences']['pageInfo']['hasNextPage'] = False
+            payload['repository']['pullRequest']['baseRefName'] = 'other'
+            with self.assertRaisesRegex(Halt, 'identity'):
+                GitHub.chat_pr_attachment(self.gh, issue, 'example/code', 41)
 
     def test_verified_manual_merge_retries_an_interrupted_status_readback(self):
         self.gh.github_status['item-1'] = 'in-progress'
@@ -288,8 +578,47 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertIn(pr['url'], self.gh.comments[-1]['body'])
         self.assertEqual(self.gh.pr_reads, [])
         self.assertEqual(self.gh.merges, [])
-        self.assertEqual(self.sync(), result)
+        notes = self.gh.comments.copy()
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+        self.assertEqual(self.gh.comments, notes)
         self.assertEqual(self.gh.writes.count((1, 'Done')), 1)
+
+    def test_inferred_completed_pr_unlink_is_only_an_attachment_warning(self):
+        self.start()
+        self.update('reviewed', 'Review')
+        self.sync()
+        pr = self.set_cross_repo_closure()
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+        self.gh.pull = pr
+        self.gh.closing_links = {'totalCount': 0, 'nodes': []}
+        self.gh.closer = None
+        notes, writes = self.gh.comments.copy(), self.gh.writes.copy()
+        result = self.sync()
+        self.assertEqual((result['state'], result['board_stage'], result['pending']), ('synced', 'Done', []))
+        self.assertEqual(result['native_pr_attachment']['state'], 'pending')
+        self.assertEqual((self.gh.comments, self.gh.writes), (notes, writes))
+        self.assertEqual(self.gh.native_writes, [])
+
+    def test_inferred_attachment_initial_read_failure_retries_after_done_without_replaying_milestones(self):
+        self.start()
+        self.update('reviewed', 'Review')
+        self.sync()
+        pr = self.set_cross_repo_closure()
+        with patch.object(self.gh, 'chat_pr_attachment', side_effect=Halt('Fixture read failed')):
+            result = self.sync()
+        self.assertEqual((result['state'], result['board_stage']), ('synced', 'Done'))
+        self.assertEqual(result['native_pr_attachment']['state'], 'pending')
+        self.gh.pull = pr
+        notes, writes = self.gh.comments.copy(), self.gh.writes.copy()
+        links = self.gh.closing_links
+        self.gh.closing_links = {'totalCount': 0, 'nodes': []}
+        self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
+        self.assertEqual(self.gh.native_writes, [])
+        self.gh.closing_links = links
+        result = self.sync()
+        self.assertEqual((result['state'], result['board_stage']), ('synced', 'Done'))
+        self.assertEqual(result['native_pr_attachment']['state'], 'verified')
+        self.assertEqual((self.gh.comments, self.gh.writes), (notes, writes))
 
     def test_unverified_closures_preserve_review(self):
         self.start()
@@ -327,15 +656,15 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.sync()['state'], 'pending')
         self.assertEqual(self.gh.github_status['item-1'], 'in-progress')
         self.gh.closer = {'id': pr['id']}
+        self.assertEqual(self.sync()['state'], 'pending')  # An unknown field write is never replayed.
+        self.gh.github_status['item-1'] = 'done'  # Eventual readback confirms the original intent.
         self.assertEqual(self.sync()['state'], 'synced')
         self.assertEqual(self.gh.github_status['item-1'], 'done')
         self.assertEqual(self.gh.writes.count((1, 'Done')), 1)
 
     def test_pr_required_decision_is_saved_and_prevents_local_completion(self):
-        with self.assertRaisesRegex(Halt, 'Choose --delivery'):
-            self.start(delivery=None)
-        self.assertEqual(self.start()['delivery'], 'pr-required')
         self.assertEqual(self.start(delivery=None)['delivery'], 'pr-required')
+        self.assertEqual(self.start()['delivery'], 'pr-required')
         with self.assertRaisesRegex(Halt, 'cannot change its delivery choice'):
             self.start(delivery='local-only')
         with self.assertRaisesRegex(Halt, 'requires a linked merged pull request'):
@@ -343,6 +672,12 @@ class ChatTrackingTests(unittest.TestCase):
         with self.assertRaisesRegex(Halt, 'requires a linked merged pull request'):
             self.update('done', 'Done')
         self.assertEqual(self.sync()['board_stage'], 'Building')
+
+    def test_default_does_not_replace_explicit_local_delivery_on_resume(self):
+        self.start(delivery='local-only')
+        self.assertEqual(self.start(delivery=None)['delivery'], 'local-only')
+        self.update('local', 'Done', local_done=True)
+        self.assertEqual(self.sync()['board_stage'], 'Done')
 
     def test_pre_upgrade_task_can_resume_without_a_delivery_decision(self):
         self.start(delivery='local-only')
@@ -415,6 +750,17 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertIsNone(status['board_stage'])
         self.assertEqual(status['pending'], ['start', 'verified'])
 
+    def test_cli_defaults_new_work_to_pr_delivery(self):
+        cli = Path(__file__).resolve().parents[1] / 'scripts/sfc.py'
+        result = run([sys.executable, '-B', str(cli), '--root', str(self.root),
+                      'track', 'start', '--task', self.task, '--type', 'Documentation',
+                      '--title', 'Document delivery', '--summary', 'Explain shared delivery',
+                      '--acceptance', 'Repository guidance explains delivery'], self.root)
+        task = json.loads(result.stdout)
+        self.assertEqual(task['delivery'], 'pr-required')
+        self.assertEqual(task['desired_stage'], 'Building')
+        self.assertIsNone(task['board_stage'])
+
     def test_chat_prompt_hook_cues_tracking_and_watcher_cannot_start(self):
         event = {'hook_event_name': 'UserPromptSubmit', 'session_id': 'chat-fixture', 'turn_id': 'turn-1',
                  'cwd': str(self.root), 'permission_mode': 'default'}
@@ -432,6 +778,9 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertIn('--delivery pr-required', instructions)
         self.assertIn('--delivery local-only', instructions)
         self.assertIn('track update --pr-url', instructions)
+        self.assertIn('default for shared-repository changes, including documentation', instructions)
+        self.assertIn('without repeated per-PR approval', instructions)
+        self.assertIn('configured change-size limit', instructions)
         runtime = SessionRuntime(self.root, environ={})
         self.assertEqual(runtime.attach(event, native_thread=event['session_id'])['state'], 'tracking')
         auth_path = common_dir(self.root) / 'sfc-autostart.json'
@@ -455,6 +804,42 @@ class ChatTrackingTests(unittest.TestCase):
                 self.assertIn('your Codex chat', error.getvalue())
                 legacy.assert_not_called()
 
+    def test_administration_ignores_stale_linked_project_configuration(self):
+        checkout = self.root.parent / 'linked-admin-copy'
+        git(self.root, 'worktree', 'add', '--detach', checkout)
+        copied = {**self.c, 'project': {'owner': 'other-owner', 'number': 999}}
+        write_json(checkout / '.sfc/config.json', copied)
+        original = (checkout / '.sfc/config.json').read_bytes()
+        for command in ('doctor', 'onboard-finish', 'dashboard', 'priority-setup', 'type-setup'):
+            options = ([], ['--apply']) if command in ('dashboard', 'priority-setup', 'type-setup') else ([],)
+            for flags in options:
+                with self.subTest(command=command, flags=flags), patch.object(sfc, 'GitHub') as github, \
+                     patch.object(sfc, 'doctor_chat', return_value={'ready': True}) as doctor:
+                    for method in ('dashboard', 'configure_dashboard', 'priority_setup', 'type_setup'):
+                        getattr(github.return_value, method).return_value = {'ready': True}
+                    with redirect_stdout(io.StringIO()):
+                        self.assertEqual(sfc.main(['--root', str(checkout), command, *flags]), 0)
+                    if command in ('doctor', 'onboard-finish'):
+                        doctor.assert_called_once_with(self.root.resolve())
+                    else:
+                        self.assertEqual(github.call_args.args[0], self.root.resolve())
+                        self.assertEqual(github.call_args.args[1]['project'], self.c['project'])
+        self.assertEqual((checkout / '.sfc/config.json').read_bytes(), original)
+
+    def test_merge_cli_uses_primary_authority_even_with_a_copied_linked_config(self):
+        checkout = self.root.parent / 'linked-copy'
+        git(self.root, 'worktree', 'add', '--detach', checkout)
+        copied = {**self.c, 'merge_policy': 'auto'}
+        write_json(checkout / '.sfc/config.json', copied)
+        from sfc_lib import chat_merge
+        with patch.object(sfc, 'GitHub') as github, patch.object(chat_merge, 'delivery', return_value={'state': 'fixture'}) as delivery:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(sfc.main(['--root', str(checkout), 'track', 'merge', '--task', self.task,
+                    '--worktree', str(checkout), '--head', 'a' * 40, '--base', 'b' * 40, '--prepare']), 0)
+        self.assertEqual(github.call_args.args[0], self.root.resolve())
+        self.assertEqual(github.call_args.args[1]['merge_policy'], self.c['merge_policy'])
+        self.assertEqual(delivery.call_args.args[1], self.root.resolve())
+
     def test_linked_checkout_tracks_from_the_configured_project_even_if_old_receipt_is_invalid(self):
         checkout = self.root / '.sfc' / 'worktrees' / 'track-local'
         git(self.root, 'worktree', 'add', '--detach', checkout)
@@ -475,11 +860,14 @@ class ChatTrackingTests(unittest.TestCase):
     def test_onboarding_sets_up_tracking_with_no_worker_grants_or_codex_cli(self):
         (self.root / '.sfc/config.json').unlink()
         github = Mock()
-        github.onboarding_identity.return_value = {'project_id': 'project'}
+        github.onboarding_identity.return_value = {'project_id': 'project', 'host': 'github.com',
+                                                      'repository_id': 'repo-id', 'repository': 'example/app'}
         github.metadata.return_value = {'id': 'project'}
         github.configure_dashboard.return_value = {'ready': True}
         github.dashboard.return_value = {'ready': True}
-        arguments = ['--root', str(self.root)]
+        checkout = self.root / '.sfc/worktrees/setup-from-linked'
+        git(self.root, 'worktree', 'add', '--detach', checkout)
+        arguments = ['--root', str(checkout)]
         onboard = ['onboard', '--repo', 'example/app', '--owner', 'example',
                    '--project', '1', '--base', 'main']
         with patch.object(sfc, 'GitHub', return_value=github), patch.object(sfc, 'Factory') as legacy:
@@ -490,12 +878,80 @@ class ChatTrackingTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(sfc.main([*arguments, *onboard, '--expected-review',
                                            preview['setup_review']['review_digest']]), 0)
-            self.assertEqual(json.loads(output.getvalue())['merge_policy'], 'human')
+            self.assertEqual(json.loads(output.getvalue())['merge_policy'], 'auto')
+            self.assertIsNone(json.loads(output.getvalue())['chat_merge_authority'])
             with redirect_stdout(io.StringIO()) as output, patch.object(sfc, 'run') as worker:
                 self.assertEqual(sfc.main([*arguments, 'doctor']), 0)
                 worker.assert_not_called()
             self.assertEqual(json.loads(output.getvalue())['worker_execution'], 'current Codex chat')
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(sfc.main([*arguments, 'onboard-finish']), 0)
+            self.assertEqual(json.loads(output.getvalue())['mode'], 'chat')
+            self.assertFalse((checkout / '.sfc/config.json').exists())
+            github.priority_setup.return_value = {'ready': True}
+            github.type_setup.return_value = {'ready': True}
+            for command in ('dashboard', 'priority-setup', 'type-setup'):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(sfc.main([*arguments, command]), 0)
+                self.assertEqual(sfc.GitHub.call_args.args[0], self.root.resolve())
             legacy.assert_not_called()
         self.assertEqual(load_config(self.root)['workflow_mode'], 'chat')
         self.assertFalse(autostart.paths(self.root)[1].exists())
         github.metadata.assert_called_once_with(create=True, project_id='project')
+
+    def test_chat_onboarding_retains_only_explicit_merge_scope_and_human_choice(self):
+        (self.root / '.sfc/config.json').unlink()
+        github = Mock()
+        github.onboarding_identity.return_value = {'project_id': 'project', 'host': 'github.com',
+                                                      'repository_id': 'repo-id', 'repository': 'example/app'}
+        github.metadata.return_value = {'id': 'project'}
+        github.configure_dashboard.return_value = {'ready': True}
+        command = ['--root', str(self.root), 'onboard', '--repo', 'example/app',
+                   '--owner', 'example', '--project', '1', '--base', 'main']
+        with patch.object(sfc, 'GitHub', return_value=github):
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(sfc.main([*command, '--preview', '--merge-policy', 'human']), 0)
+            preview = json.loads(output.getvalue())
+            self.assertEqual(preview['proposed_config']['merge_policy'], 'human')
+            self.assertNotIn('chat_merge_authority', preview['proposed_config'])
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(sfc.main([*command, '--merge-policy', 'human', '--allow-merge']), 1)
+            self.assertFalse((self.root / '.sfc/config.json').exists())
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(sfc.main([*command, '--allow-merge']), 1)
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(sfc.main([*command, '--allow-merge', '--preview']), 0)
+            automatic = json.loads(output.getvalue())
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(sfc.main([*command, '--allow-merge', '--expected-review',
+                                           preview['setup_review']['review_digest']]), 1)
+            self.assertFalse((self.root / '.sfc/config.json').exists())
+            github.onboarding_identity.return_value['repository_id'] = 'replacement'
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(sfc.main([*command, '--allow-merge', '--expected-review',
+                                           automatic['setup_review']['review_digest']]), 1)
+            self.assertFalse((self.root / '.sfc/config.json').exists())
+            github.onboarding_identity.return_value['repository_id'] = 'repo-id'
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(sfc.main([*command, '--allow-merge', '--expected-review',
+                                           automatic['setup_review']['review_digest']]), 0)
+            applied = json.loads(output.getvalue())
+        expected = {'repo': 'example/app', 'base_branch': 'main', 'scope': 'user-requested-tasks',
+                    'provider': 'atomic-fast-forward', 'host': 'github.com', 'repository_id': 'repo-id'}
+        self.assertEqual(applied['chat_merge_authority'], expected)
+        self.assertEqual(load_config(self.root)['chat_merge_authority'], expected)
+
+    def test_linked_checkout_cannot_shadow_the_primary_human_merge_policy(self):
+        config = {**self.c, 'merge_policy': 'human'}
+        write_json(self.root / '.sfc/config.json', config)
+        original = (self.root / '.sfc/config.json').read_bytes()
+        checkout = self.root / '.sfc/worktrees/onboarding-shadow'
+        git(self.root, 'worktree', 'add', '--detach', checkout)
+        with patch.object(sfc, 'GitHub') as github, redirect_stderr(io.StringIO()):
+            result = sfc.main(['--root', str(checkout), 'onboard', '--repo', 'example/app',
+                               '--owner', 'example', '--project', '1', '--base', 'main',
+                               '--allow-merge', '--expected-review', 'prior-preview'])
+        self.assertEqual(result, 1)
+        github.assert_not_called()
+        self.assertEqual((self.root / '.sfc/config.json').read_bytes(), original)
+        self.assertFalse((checkout / '.sfc/config.json').exists())

@@ -162,27 +162,45 @@ def save_project_config(root, config):
 def onboard_chat(root, args):
     if chat_tracking.chat_mode(root) or (root / '.sfc/onboarding.json').exists():
         raise Halt('SFC is already configured. Use doctor to check the configured Project.')
-    if (args.auto_start is True or args.session_lifetime is True or args.allow_merge
-            or args.release_config or args.release_authorization or args.merge_policy == 'auto'):
-        raise Halt('SFC tracks work started in Codex chat. Set up the Project with manual merging.')
+    primary = git(root, 'worktree', 'list', '--porcelain', '-z').split('\0', 1)[0]
+    if primary.startswith('worktree '):
+        root = Path(primary.removeprefix('worktree ')).resolve()
+    if chat_tracking.chat_mode(root) or (root / '.sfc/onboarding.json').exists():
+        raise Halt('SFC is already configured in the primary checkout. Preserve its saved merge policy.')
+    if (args.auto_start is True or args.session_lifetime is True
+            or args.release_config or args.release_authorization):
+        raise Halt('SFC tracks work started in Codex chat. Set up the Project without a background worker or release grant.')
+    merge_policy = args.merge_policy or 'auto'
+    if args.allow_merge and merge_policy != 'auto':
+        raise Halt('--allow-merge requires the automatic merge policy')
+    if args.allow_merge and not args.preview and not args.expected_review:
+        raise Halt('Preview --allow-merge, then apply its --expected-review digest before saving merge authority')
     repo = args.repo or GitHub(root, {"project": {}}).call("repo", "view", "--json", "nameWithOwner")["nameWithOwner"]
     branch = args.base or git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False).removeprefix("origin/")
     if not branch:
         raise Halt("Set --base explicitly; remote default branch is unavailable")
     config = validate_config({
         "version": 1, "workflow_mode": "chat", "repo": repo, "base_branch": branch,
+        "chat_merge_provider": "atomic-fast-forward",
         "project": {"owner": args.owner, "number": args.project}, "status_field": args.status_field,
         "verify_commands": args.verify or [], "activity_timezone": args.activity_timezone,
-        "merge_policy": "human", "merge_mode": "github-protected", "allow_no_checks": False,
+        "merge_policy": merge_policy, "merge_mode": "github-protected", "allow_no_checks": False,
         "auto_max_lines": 400, "max_workers": 2, "max_cycles": 20, "max_no_progress": 3,
         "max_attempts": 2, "worker_timeout": 1200, "verify_timeout": 900,
     })
+    if args.allow_merge:
+        config['chat_merge_authority'] = {'repo': repo, 'base_branch': branch,
+                                         'scope': 'user-requested-tasks', 'provider': config['chat_merge_provider']}
     gh = GitHub(root, config)
     identity = gh.onboarding_identity()
+    if args.allow_merge:
+        config['chat_merge_authority'].update({key: identity[key] for key in ('host', 'repository_id')})
+    from sfc_lib.chat_merge import support
+    merge_support = support(gh, config)
     digest = autostart.digest([config, identity])
     if args.preview:
         return {"mode": "chat", "proposed_config": config, "project_id": identity["project_id"],
-                "setup_review": {"review_digest": digest}}
+                "setup_review": {"review_digest": digest}, "automatic_merge": merge_support}
     if args.expected_review is not None and args.expected_review != digest:
         raise Halt('Setup review changed; preview the Project again before applying')
     autostart.verify_onboarding_identity(gh, identity)
@@ -190,16 +208,21 @@ def onboard_chat(root, args):
     autostart.verify_onboarding_identity(gh, identity)
     save_project_config(root, config)
     return {"mode": "chat", "config": str(root / ".sfc/config.json"), "project_id": metadata["id"],
-            "merge_policy": "human", "dashboard": gh.configure_dashboard()}
+            "merge_policy": config['merge_policy'],
+            "chat_merge_authority": config.get('chat_merge_authority'),
+            "automatic_merge": merge_support,
+            "dashboard": gh.configure_dashboard(linked_prs=True)}
 
 
 def doctor_chat(root):
     config = load_config(root)
     gh = GitHub(root, config)
     gh.verify_repository()
-    dashboard = gh.dashboard()
+    dashboard = gh.dashboard(linked_prs=True)
+    from sfc_lib.chat_merge import support
     return {"mode": "chat", "ready": True, "onboarding_complete": dashboard["ready"],
             "dashboard": dashboard, "worker_timeout": config["worker_timeout"],
+            "automatic_merge": support(gh, config),
             "verify_commands": config["verify_commands"],
             "verify_command_count": len(config["verify_commands"]),
             "verify_timeout": config["verify_timeout"],
@@ -249,13 +272,14 @@ def main(argv=None):
                        help=argparse.SUPPRESS)
     setup.add_argument('--preview', action='store_true', help='verify the repository and Project before applying setup')
     setup.add_argument('--expected-review', help='require the same configuration and Project identity as --preview')
-    setup.add_argument('--allow-merge', action='store_true', help=argparse.SUPPRESS)
+    setup.add_argument('--allow-merge', action='store_true',
+                       help='authorize eligible automatic merges for user-requested chat tasks on the selected repository and base')
     setup.add_argument('--release-config', type=Path, help=argparse.SUPPRESS)
     setup.add_argument('--release-mode', choices=('publish', 'draft', 'off'), default='publish', help=argparse.SUPPRESS)
     setup.add_argument('--release-authorization', help=argparse.SUPPRESS)
     setup.add_argument('--review-efficiency', choices=('qualified', 'baseline'), default='qualified', help=argparse.SUPPRESS)
     setup.add_argument("--merge-policy", choices=("human", "auto"),
-                       help="chat tracking leaves merging to you (human)")
+                       help="automatic delivery by default; human keeps an explicit merge gate")
     setup.add_argument("--merge-mode", choices=("github-protected", "local-verification"),
                        default="github-protected", help=argparse.SUPPRESS)
     setup.add_argument("--allow-no-checks", action="store_true",
@@ -322,7 +346,7 @@ def main(argv=None):
     tracked_start.add_argument('--acceptance', action='append', default=[])
     tracked_start.add_argument('--issue', type=int)
     tracked_start.add_argument('--delivery', choices=chat_tracking.DELIVERY_MODES,
-                               help='required when starting a new task')
+                               help='new tasks default to pr-required; use local-only for explicit local delivery')
     tracked_update = tracking.add_parser('update', help='queue an observed milestone and its evidence')
     tracked_update.add_argument('--task', required=True)
     tracked_update.add_argument('--event', required=True)
@@ -332,11 +356,22 @@ def main(argv=None):
     tracked_pr.add_argument('--pr', type=int, help='pull request number in the tracked issue repository')
     tracked_pr.add_argument('--pr-url', help='exact GitHub pull request URL, including from another repository')
     tracked_update.add_argument('--local-done', action='store_true')
+    tracked_update.add_argument('--closes-issue', action='store_true',
+                                help='the recorded PR delivers and should close the tracked issue')
+    tracked_update.add_argument('--milestone-only', action='store_true', help='link partial PR progress without completing the task on its merge')
     tracked_status = tracking.add_parser('status', help='read the local issue binding and pending milestones')
     select_task = tracked_status.add_mutually_exclusive_group(required=True)
     select_task.add_argument('--task')
     select_task.add_argument('--prefix')
     tracking.add_parser('sync', help='sync one task and read back the board state').add_argument('--task', required=True)
+    delivery = tracking.add_parser('merge', help='supervisor: prepare reviewed chat delivery or apply its pinned atomic merge')
+    delivery.add_argument('--task', required=True)
+    delivery.add_argument('--worktree', required=True, type=Path)
+    delivery.add_argument('--head', required=True)
+    delivery.add_argument('--base', required=True)
+    choice = delivery.add_mutually_exclusive_group(required=True)
+    choice.add_argument('--prepare', action='store_true', help='spend one finite preparation on actual checks and native review')
+    choice.add_argument('--apply', action='store_true', help='consume qualified evidence and existing merge authority')
     release = sub.add_parser("release-request", help="create a frozen versioned release card; no publication")
     release.add_argument("--version", help="explicit version; otherwise configured plain-text version_file")
     release.add_argument("--recover-creation", action="store_true",
@@ -405,6 +440,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         root = repo_root(args.root)
+        if args.command in ('doctor', 'onboard-finish', 'dashboard', 'priority-setup', 'type-setup'):
+            root = chat_tracking.primary_root(root)
         if (((args.command in ('run', 'watch') and not args.dry_run) or
              (args.command == 'autostart' and args.enable) or
              (args.command in ('recover-ticket', 'recover-findings', 'recover-worker-output') and args.grant_one))
@@ -452,9 +489,9 @@ def main(argv=None):
             if args.apply:
                 with exclusive(root), creation_lock(root):
                     gh.verify_repository()
-                    result = gh.configure_dashboard()
+                    result = gh.configure_dashboard(linked_prs=chat_tracking.chat_mode(root))
             else:
-                result = gh.dashboard()
+                result = gh.dashboard(linked_prs=chat_tracking.chat_mode(root))
         elif args.command in ("priority-setup", "type-setup"):
             gh = GitHub(root, load_config(root))
             prepare = gh.priority_setup if args.command == "priority-setup" else gh.type_setup
@@ -502,7 +539,8 @@ def main(argv=None):
                                    body=Path(args.body_file).read_text(), priority=args.priority,
                                    reason=args.reason, unknowns=args.unknowns, work_type=args.work_type, labels=args.label)
         elif args.command == 'track':
-            root = chat_tracking.project_root(root)
+            root = (chat_tracking.primary_root(root) if args.action == 'merge'
+                    else chat_tracking.project_root(root))
             config = load_config(root)
             if args.action == 'enable':
                 result = chat_tracking.enable(root)
@@ -513,9 +551,13 @@ def main(argv=None):
             elif args.action == 'update':
                 result = chat_tracking.update(root, config, task=args.task, event_id=args.event, stage=args.stage,
                                               summary=args.summary, pr=args.pr, pr_url=args.pr_url,
-                                              local_done=args.local_done)
+                                              local_done=args.local_done, closes_issue=args.closes_issue, milestone_only=args.milestone_only)
             elif args.action == 'status':
                 result = chat_tracking.status(root, config, task=args.task, prefix=args.prefix)
+            elif args.action == 'merge':
+                from sfc_lib.chat_merge import delivery
+                result = delivery(GitHub(root, config), root, args.task, args.worktree,
+                                  args.head, args.base, apply=args.apply)
             else:
                 result = chat_tracking.sync(GitHub(root, config), root, args.task)
         elif args.command == "watch-status":

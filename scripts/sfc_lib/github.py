@@ -22,13 +22,14 @@ ITEMS_QUERY = """query($id:ID!, $after:String) {
 LOCAL_MERGE_QUERY = """query($owner:String!, $name:String!, $number:Int!,
  $issue:Int!, $base:String!, $head:String!) {
  repository(owner:$owner, name:$name) {
- id nameWithOwner isArchived viewerPermission
+ id nameWithOwner isArchived viewerPermission defaultBranchRef { name }
  base:ref(qualifiedName:$base) { ...MergeRef }
  head:ref(qualifiedName:$head) { ...MergeRef }
  pullRequest(number:$number) {
  id number url state isDraft headRefName headRefOid baseRefName baseRefOid mergedAt
  headRepository { id nameWithOwner } baseRepository { id nameWithOwner }
  mergeCommit { oid }
+ potentialMergeCommit { oid tree { oid } parents(first:3) { totalCount nodes { oid } } }
  closingIssuesReferences(first:100) { totalCount nodes { id } }
  }
  issue(number:$issue) { id number url state repository { nameWithOwner } }
@@ -39,6 +40,29 @@ fragment MergeRef on Ref {
  branchProtectionRule { id }
  rules(first:1) { totalCount }
 }"""
+
+# One final remote response binds eligibility, policy and applicable CI.
+from .priority import ITEM_SELECTION
+CHAT_CHECK_FIELDS = """__typename ... on CheckRun { id name status conclusion detailsUrl startedAt completedAt
+   checkSuite { app { id slug } } }
+ ... on StatusContext { id context state targetUrl createdAt }"""
+CHAT_CHECKS = ('statusCheckRollup { state contexts(first:100) { pageInfo { hasNextPage endCursor } '
+               'nodes { ' + CHAT_CHECK_FIELDS + ' } } }')
+CHAT_DELIVERY_QUERY = LOCAL_MERGE_QUERY.replace(
+    '$head:String!', '$head:String!, $item:ID!, $field:ID!, $after:String, $baseName:String!, $checkIds:[ID!]!').replace(
+    'head:ref(qualifiedName:$head) { ...MergeRef }',
+    'head:ref(qualifiedName:$head) { ...MergeRef target { ... on Commit { ' + CHAT_CHECKS + ' } } }').replace(
+    'potentialMergeCommit { oid tree { oid } parents(first:3) { totalCount nodes { oid } } }',
+    'potentialMergeCommit { oid tree { oid } parents(first:3) { totalCount nodes { oid } } ' + CHAT_CHECKS + ' }').replace(
+    'id nameWithOwner isArchived viewerPermission defaultBranchRef { name }',
+    'id nameWithOwner isArchived viewerPermission defaultBranchRef { name } '
+    'openDeliveryPRs:pullRequests(first:100,states:[OPEN],baseRefName:$baseName) { '
+    'pageInfo { hasNextPage endCursor } nodes { id number url headRefOid baseRefName } }').replace(
+    'issue(number:$issue) { id number url state repository { nameWithOwner } }',
+    'issue(number:$issue) { id number title body url state repository { nameWithOwner } '
+    'labels(first:100) { nodes { id name } pageInfo { hasNextPage endCursor } } }').replace(
+    '\n}\nfragment MergeRef', '\n' + ITEM_SELECTION +
+    '\nknownChecks:nodes(ids:$checkIds) { ' + CHAT_CHECK_FIELDS + ' }\nrouting:node(id:$field) { ... on ProjectV2SingleSelectField { id name options { id name } } }\n}\nfragment MergeRef')
 
 LOCAL_MERGE_CAPABILITIES = """query {
  mutation:__type(name:"Mutation") { fields { name args { name } } }
@@ -331,17 +355,17 @@ class GitHub:
         from .work_types import setup
         return setup(self, apply=apply)
 
-    def dashboard(self):
+    def dashboard(self, *, linked_prs=False):
         data = self.dashboard_data()
         report = assess_dashboard(data["field"], self.factory_view(data), data["project"]["url"],
-                                  data["project"]["fields"]["nodes"])
+                                  data["project"]["fields"]["nodes"], linked_prs=linked_prs)
         report["priority"] = self.priority_setup()
         report["ready"] = report["ready"] and report["priority"]["ready"]
         report["work_types"] = self.type_setup()
         report["ready"] = report["ready"] and report["work_types"]["ready"]
         return report
 
-    def configure_dashboard(self):
+    def configure_dashboard(self, *, linked_prs=False):
         """Explicit onboarding/repair writes only; repeated matching setup is read-only."""
         self.priority_setup()  # Refuse ambiguous conventions before presentation writes.
         self.type_setup()  # Discover labels/views and reject conflicts before writes.
@@ -400,7 +424,7 @@ class GitHub:
         # GitHub's current public mutation exposes no column-by update. Read the
         # saved grouping and leave an explicit pending UI step until it matches.
         report = assess_dashboard(final["field"], saved, final["project"]["url"],
-                                  final["project"]["fields"]["nodes"])
+                                  final["project"]["fields"]["nodes"], linked_prs=linked_prs)
         report["priority"] = self.priority_setup(apply=True)
         report["ready"] = report["ready"] and report["priority"]["ready"]
         report["work_types"] = self.type_setup(apply=True)
@@ -574,6 +598,45 @@ class GitHub:
             return None
         return pr
 
+    def chat_pr_attachment(self, issue, repository, number):
+        owner, name = repository.split('/')
+        data = self.graphql('''query($issue:ID!, $owner:String!, $name:String!, $number:Int!) {
+          issue:node(id:$issue) { ... on Issue {
+            id number repository { nameWithOwner }
+            closedByPullRequestsReferences(first:100,includeClosedPrs:true) {
+              totalCount pageInfo { hasNextPage } nodes { id }
+            }
+          } }
+          repository(owner:$owner,name:$name) { nameWithOwner
+            pullRequest(number:$number) { id number url baseRefName }
+          }
+        }''', {'issue': issue['id'], 'owner': owner, 'name': name, 'number': number})
+        try:
+            current, repo = data['issue'], data['repository']
+            pr = repo['pullRequest']
+            links = current['closedByPullRequestsReferences']
+            ids = [node['id'] for node in links['nodes']]
+            valid = (current['id'] == issue['id'] and current['number'] == issue['number'] and
+                     current['repository']['nameWithOwner'].casefold() == self.c['repo'].casefold() and
+                     repo['nameWithOwner'].casefold() == repository.casefold() and
+                     pr['number'] == number and pr['id'] and
+                     pr['url'].casefold() == f'https://github.com/{repository}/pull/{number}'.casefold() and
+                     pr['baseRefName'] == self.c['base_branch'] and
+                     links['pageInfo']['hasNextPage'] is False and
+                     type(links['totalCount']) is int and links['totalCount'] == len(ids) and
+                     len(set(ids)) == len(ids) and all(isinstance(value, str) and value for value in ids))
+        except (KeyError, TypeError, AttributeError):
+            valid = False
+        if not valid:
+            raise Halt('Native PR attachment identity or complete reference inventory could not be verified')
+        return {'issue': current['id'], 'pull_request': pr['id'], 'url': pr['url'],
+                'base': pr['baseRefName'], 'references': sorted(ids)}
+
+    def attach_chat_pr(self, issue_id, pr_id):
+        self.graphql('''mutation($input:AddCloseIssueReferencesInput!) {
+          addCloseIssueReferences(input:$input) { issue { id } }
+        }''', {'input': {'issueId': issue_id, 'pullRequestIds': [pr_id]}})
+
     def chat_pr(self, number, *, repository=None):
         """Read the linked PR and its checks without listing its changed files."""
         return self.call("pr", "view", number, "--repo", repository or self.c["repo"], "--json",
@@ -595,14 +658,19 @@ class GitHub:
         if result["issueRepo"]["visibility"] == "PUBLIC" and result["prRepo"]["visibility"] != "PUBLIC":
             raise Halt("A public issue cannot publish a nonpublic pull request link")
 
-    def pr(self, number):
+    def pr(self, number, *, include_checks=True):
         pr = self.call("pr", "view", number, "--repo", self.c["repo"], "--json",
-                       "id,number,url,body,state,headRefOid,baseRefName,headRefName,isCrossRepository,mergeStateStatus,isDraft,statusCheckRollup,additions,deletions")
+                       "id,number,url,body,state,headRefOid,baseRefName,headRefName,isCrossRepository,mergeStateStatus,isDraft," +
+                       ("statusCheckRollup," if include_checks else "") + "additions,deletions")
         pages = self.call("api", f"repos/{self.c['repo']}/pulls/{number}/files", "--paginate", "--slurp")
         pr["files"] = [{"path": item["filename"]} for page in pages for item in page]
         if len(pr["files"]) >= 3000:
             raise Halt("PR file inventory may be truncated; automatic assessment refused")
         return pr
+
+    def delivery_pr(self, number):
+        # CI is read once with final policy, rather than through an older rollup.
+        return self.pr(number, include_checks=False)
 
     def create_pr(self, card, branch, body_path):
         # API returns JSON, so no parsing of display output or invented PR number.
@@ -647,7 +715,19 @@ class GitHub:
             raise Halt("Local merge repository snapshot unavailable")
         return data["repository"]
 
-    def local_merge_checks(self, head):
+    def chat_delivery_snapshot(self, number, issue, base, head, item, field, *, check_ids=()):
+        owner, name = self.c['repo'].split('/')
+        data = self.graphql(CHAT_DELIVERY_QUERY, {'owner': owner, 'name': name, 'number': number, 'issue': issue,
+                                                'base': base, 'head': head, 'item': item, 'field': field, 'after': None,
+                                                'baseName': self.c['base_branch'], 'checkIds': list(check_ids)})
+        if not isinstance(data, dict) or not all(isinstance(data.get(k), dict) for k in ('repository', 'node', 'routing')):
+            raise Halt('Combined PR/issue/routing snapshot is unavailable')
+        if not isinstance(data.get('knownChecks'), list):
+            raise Halt('Known check identity readback is unavailable')
+        return {**data['repository'], 'tracking_item': data['node'], 'routing_field': data['routing'],
+                'known_checks': data['knownChecks']}
+
+    def local_merge_checks(self, head, *, identities=False):
         """Enumerate latest checks/status contexts; never trust a truncated rollup."""
         prefix = f"repos/{self.c['repo']}/commits/{head}"
         runs = self.call("api", prefix + "/check-runs?per_page=100&filter=latest", "--paginate", "--slurp")
@@ -659,20 +739,31 @@ class GitHub:
                     raise ValueError("missing check inventory")
                 entries = [entry for page in pages for entry in page[key]]
                 totals = {page["total_count"] for page in pages}
-                identities = [e["id"] if key == "check_runs" else e["context"] for e in entries]
-                if (totals != {len(entries)} or len(set(identities)) != len(entries) or
-                        any(not value for value in identities)):
+                inventory_ids = [e["id"] if key == "check_runs" else e["context"] for e in entries]
+                if (totals != {len(entries)} or len(set(inventory_ids)) != len(entries) or
+                        any(not value for value in inventory_ids)):
                     raise ValueError("incomplete or changing check inventory")
                 if key == "check_runs":
                     for entry in entries:
                         if entry["head_sha"] != head:
                             raise ValueError("check belongs to another commit")
-                        result.append({"status": entry["status"].upper(),
-                                       "conclusion": (entry["conclusion"] or "").upper()})
+                        row = {"status": entry["status"].upper(), "conclusion": (entry["conclusion"] or "").upper()}
+                        if identities:
+                            row.update(__typename='CheckRun', id=entry['node_id'], databaseId=entry['id'], name=entry['name'],
+                                       app=entry.get('app'), check_suite=entry.get('check_suite'),
+                                       startedAt=entry.get('started_at'), completedAt=entry.get('completed_at'))
+                        result.append(row)
                 else:
                     if any(page["sha"] != head for page in pages):
                         raise ValueError("statuses belong to another commit")
-                    result.extend({"state": entry["state"].upper()} for entry in entries)
+                    for entry in entries:
+                        row = {"state": entry['state'].upper()}
+                        if identities:
+                            row.update(__typename='StatusContext', id=entry['node_id'], databaseId=entry['id'],
+                                       context=entry['context'], createdAt=entry.get('created_at'), targetUrl=entry.get('target_url'))
+                        result.append(row)
+            if identities and any(not row['id'] or not row.get('name', row.get('context')) for row in result):
+                raise ValueError('missing named check identities')
         except (KeyError, TypeError, AttributeError, ValueError) as exc:
             raise Halt("GitHub check inventory missing, incomplete or changed; no merge") from exc
         return result

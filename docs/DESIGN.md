@@ -13,6 +13,17 @@ SFC saves milestones to a local outbox and reads back GitHub Project changes.
 Existing configurations use that path on upgrade. The following sections
 describe the previous factory engine and the receipts it left behind.
 
+Chat delivery has an explicitly reviewed atomic fast-forward provider. It owns
+finite check/native-review preparations and a separately reserved fresh final
+verification, pins host/repository node identity and both commit inputs, and
+uses the existing atomic non-force updateRefs adapter. It requires complete
+native review/acceptance proof and ordinary policy gates. Same-repository closing
+PRs on unprotected/unruled refs are supported; protected refs, custom review
+policies and absent/legacy grants are explicit setup or maintainer handoffs.
+It never starts a builder, changes existing configuration or bypasses a rule.
+Unknown writes retain their intent for readback only. The tracker publishes Done
+only after GitHub independently confirms the merge.
+
 Local [delivery accounting](DELIVERY-ACCOUNTING.md) links work and release
 tickets, command/worker attempts, immutable reuse references and publication
 recovery across runs. Status links an offline-rebuildable report with stage wall

@@ -1,5 +1,18 @@
 # Onboarding
 
+## Chat tracking setup
+
+For the current chat workflow, follow [chat tracking](../../../docs/CHAT-TRACKING.md).
+Inspect existing project configuration first and preserve its merge choices.
+New projects default to `auto`. Explain the selected repository, base, checks
+and change-size limit once. If the user authorizes automatic delivery for
+requested tasks, use `onboard --allow-merge` to save that repository/base scope.
+Use `--merge-policy human` when requested. Preview with the same merge choice,
+then apply its exact `--expected-review` digest before saving merge authority.
+Setup uses the primary checkout and preserves existing project configuration.
+Verify the dashboard with `doctor`. The sections below describe
+the older factory setup and its retained recovery controls.
+
 Use the [supported-feature checklist](../../../docs/ONBOARDING.md) for discovery
 and the final report. Capture the installed runtime version/path and the actually
 loaded skill path/version separately; stale loaded instructions are not proof

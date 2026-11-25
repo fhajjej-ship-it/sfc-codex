@@ -57,7 +57,8 @@ class ReleasePreflightTests(unittest.TestCase):
         version = __version__
         archive = f'dist/sfc-{version}.zip'
         self.config = config()
-        self.config.update(max_attempts=1, verify_commands=[self.project_check])
+        # Test actual semantic rejection, not runner-load timing during ZIP smoke checks.
+        self.config.update(max_attempts=1, verify_commands=[self.project_check], verify_timeout=60)
         release = self.config['release']
         release.update(package_commands=[self.package_check], verify_commands=[],
                        preflight_commands=[preflight or self.preflight_check], artifacts=[archive, archive + '.sha256'])

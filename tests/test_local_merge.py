@@ -57,20 +57,24 @@ class AtomicGitHub(PickupGitHub):
 
     def local_merge_snapshot(self, number, issue, base, head):
         def ref(name):
+            if run(['git', 'show-ref', '--verify', '--quiet', name], self.remote, check=False).returncode:
+                return None
             oid = self.oid(name)
             return {"id": name, "prefix": "refs/heads/", "name": name.removeprefix("refs/heads/"),
                     "target": {"__typename": "Commit", "oid": oid,
                                "tree": {"oid": self.oid(oid + "^{tree}")}},
                     "branchProtectionRule": self.protected, "rules": {"totalCount": self.rules}}
         pr = self.pr(number)
+        head_ref, base_ref = ref(head), ref(base)
         repo = {"id": "repo-node", "nameWithOwner": "example/app"}
         item = next(c for c in self.items if c["number"] == issue)
-        pr.update(id=f"pr-node-{number}", headRefOid=self.oid(head), baseRefOid=self.oid(base),
+        pr.update(id=f"pr-node-{number}", headRefOid=head_ref['target']['oid'] if head_ref else pr['headRefOid'],
+                  baseRefOid=base_ref['target']['oid'] if base_ref else None,
                   headRepository=repo.copy(), baseRepository=repo.copy(),
                   mergeCommit=pr.get("mergeCommit"),
                   closingIssuesReferences={"totalCount": 1, "nodes": [{"id": item["id"]}]})
         snapshot = {**repo, "isArchived": False, "viewerPermission": "WRITE",
-                    "head": ref(head), "base": ref(base), "pullRequest": pr,
+                    "head": head_ref, "base": base_ref, "pullRequest": pr,
                     "issue": {k: item[k] for k in ("id", "number", "url", "state", "repository")}}
         if self.edit_snapshot:
             self.edit_snapshot(snapshot)
@@ -702,6 +706,18 @@ class LocalMergeAdapterTests(unittest.TestCase):
             with patch.object(gh, "graphql", return_value=response), self.assertRaises(Halt):
                 gh.atomic_fast_forward(intent)
 
+    def test_named_check_inventory_retains_original_ids_and_contexts(self):
+        gh = self.adapter(); sha = 'a' * 40
+        checks = [{'total_count': 1, 'check_runs': [{'id': 101, 'node_id': 'run-node', 'name': 'unit',
+                   'head_sha': sha, 'status': 'completed', 'conclusion': 'success'}]}]
+        statuses = [{'total_count': 1, 'sha': sha, 'statuses': [{'id': 202, 'node_id': 'status-node',
+                      'context': 'lint', 'state': 'success'}]}]
+        with patch.object(gh, 'call', side_effect=[checks, statuses]):
+            result = gh.local_merge_checks(sha, identities=True)
+        self.assertEqual([(row['id'], row.get('name', row.get('context'))) for row in result],
+                         [('run-node', 'unit'), ('status-node', 'lint')])
+        self.assertEqual([row['databaseId'] for row in result], [101, 202])
+
     def test_schema_capabilities_fail_closed(self):
         gh = self.adapter()
         schema = {"mutation": {"fields": [{"name": "updateRefs", "args": [{"name": "input"}]}]},
@@ -773,13 +789,15 @@ class MergeOnboardingTests(unittest.TestCase):
         self.assertFalse((common_dir(self.root) / "sfc-watch.json").exists())
         self.assertEqual(self.proc.lanes, [])
 
-    def test_onboarding_help_describes_chat_and_manual_merging(self):
+    def test_onboarding_help_describes_automatic_delivery_and_human_choice(self):
         output = io.StringIO()
         with redirect_stdout(output), self.assertRaises(SystemExit) as exit:
             sfc.main(["onboard", "--help"])
         self.assertEqual(exit.exception.code, 0)
         help_text = " ".join(output.getvalue().split())
-        self.assertIn("chat tracking leaves merging to you", help_text)
+        self.assertIn("automatic delivery by default", help_text)
+        self.assertIn("human keeps an explicit merge gate", help_text)
+        self.assertIn("--allow-merge", help_text)
         self.assertNotIn("--auto-start", help_text)
 
     def test_cli_explicit_human_policy_is_saved_and_blocks_authorized_auto_merge(self):

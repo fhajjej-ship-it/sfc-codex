@@ -19,27 +19,96 @@ plugin code and skills read-only.
 1. For an actionable feature, fix, maintenance, refactor or documentation
    request, use `track status --prefix PREFIX` to find an existing task. For
    new work, use `track start` with a stable task ID, work type and observable
-   acceptance criteria. Decide where the result needs to land. Choose
+   acceptance criteria. Decide where the result needs to land from the user's
+   requested outcome, without asking them to manage the delivery mode. Choose
    `--delivery pr-required` for changes intended for the shared repo or
-   `--delivery local-only` for verified work that stays local. Link the
+   `--delivery local-only` when the user explicitly requests local delivery.
+   Repository documentation and workflow guidance intended for users require
+   a PR. New tasks default to `pr-required` when the option is omitted. Link the
    named issue with `--issue`. Sync Building before editing and show the
    verified issue link and saved delivery choice in chat.
 2. Work in the current chat. As checks, review, a PR or a genuine blocker
    occurs, record actual evidence with `track update` and sync. Keep
    transcripts, credentials, logs and private paths local. During a GitHub
    outage, keep working and retry pending updates at the next checkpoint.
-3. When authorized to open a PR, open it as a draft during QA after the
+3. Carry authorized shared-repository delivery through a PR. Open it as a draft during QA after the
    focused checks pass. Record the exact returned URL with `track update
    --pr-url` and sync the QA milestone so the issue links to the draft.
+   When the PR delivers the tracked issue, record `--closes-issue` and verify
+   GitHub's native Development attachment and the board's Linked pull requests
+   badge. Sync creates and verifies that closing relationship through
+   `addCloseIssueReferences`, including across repositories. A comment alone
+   does not establish the attachment. Preserve existing links and pending writes.
+   Record a partial or tracking-only PR with `--milestone-only`. Its merge
+   records progress, preserves its receipt and does not complete the task.
+   After its terminal state is verified and pending writes reconciled, record
+   the actual delivery PR on the same task. It keeps its milestone link without
+   adding a closing relationship. Infer the intended scope from the requested work.
+   Report attachment warnings separately from verified milestone delivery.
    GitHub CI can run while verification continues. Move to Review as the change is
    reviewed and follow the repository's normal checks and merge permissions.
-   Sync the task after CI or a merge. SFC reports the latest observed PR and
+   With configured `auto` policy and existing authority for the repository,
+   base and task, complete the eligible merge without another per-PR question.
+   Apply the delivery checks below. Sync the task after CI or a merge. SFC reports the latest observed PR and
    CI state and records Done when GitHub confirms the merge. For a verified
    local-only delivery, use `--local-done`. A PR-required task needs a linked
    verified merge to reach Done. Explain pending updates in chat.
 
 Routine questions and status checks need no ticket. See
 [chat tracking](../../docs/CHAT-TRACKING.md) for commands and examples.
+
+## Complete delivery
+
+Read the repository instructions and saved merge policy before publishing.
+Verify that existing user authority covers the selected repository, base and
+task. A shared delivery request covers opening its PR when the repository
+instructions permit it. Keep explicit local choices and human merge gates.
+New setup defaults to `auto`; when the user authorizes automatic delivery,
+onboard with `--allow-merge` to retain `chat_merge_authority` for the selected
+repository and base. Validate that scope against the current configuration
+and requested work before using it, including its host, repository node ID
+and selected provider against live GitHub identity. Preserve existing configurations.
+Explain a missing authorization once with the concrete PR ready for review.
+
+Finish the required checks and independent review on the exact candidate.
+Compare the current remote head and base with that evidence, and refresh the
+affected verification after either changes. Check the configured change-size
+limit, sensitive-path policy and repository protections. Evaluate
+`factory.policy_reasons(config, issue_card, pr)` against the actual tracked
+issue and PR, including `human-only`, security and configured label gates.
+Any policy reason requires its documented handoff. A draft, failed or
+missing required check, unresolved finding or uncertain write remains pending.
+Use `track merge --task ID --worktree PATH --head SHA --base SHA --prepare`
+for the configured chat atomic provider. It runs the configured checks and
+an independent native Codex review with parsed completion and acceptance
+coverage, within a finite, persisted preparation allowance. During implementation,
+use focused checks. Preparation owns its full suite and native review; do not
+duplicate them beforehand. Qualified evidence permits marking a new PR ready and recording Review. An authorized
+already-ready PR uses the same real verification and independent review; do not
+invent a prior draft milestone or require it to be recreated. Then use the same
+pins with `--apply`: fresh final checks, original proof validation and policy
+guards precede one atomic compare of both refs. Sync after GitHub confirms
+the merge. Preserve uncertain intents; subsequent apply only reads them back.
+An expected-head-only queued merge cannot establish the required binding.
+Setup and doctor report availability separately from saved consent. The chat
+provider supports same-repository closing PRs on unprotected/unruled default
+branches; it never bypasses rules or custom review-policy obligations.
+Other configurations retain a concrete maintainer/human handoff.
+The legacy local-verification `run` entry point is unavailable in chat mode.
+Existing projects with that mode need an authorized maintainer merge or a
+human handoff followed by tracking sync. Preserve the saved mode and receipts;
+consult [local merging](../../docs/LOCAL-MERGE.md) for its retained protocol.
+After a lost response, inspect the existing merge request before any new write.
+
+Keep the task in Review while auto-merge is queued and report its actual wait.
+Read back the merged PR, then sync the task so Done means verified delivery.
+
+## Ticket chats
+
+New bugs, maintenance tasks and features get their own Codex chat. Check for an
+existing ticket chat and board card first, and reuse both for follow-ups.
+Keep routine questions and initial discussion in the current chat. Start the
+work in the ticket's chat once the user asks to proceed.
 
 ## Project administration
 
