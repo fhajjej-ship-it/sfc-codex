@@ -574,6 +574,45 @@ class GitHub:
             return None
         return pr
 
+    def chat_pr_attachment(self, issue, repository, number):
+        owner, name = repository.split('/')
+        data = self.graphql('''query($issue:ID!, $owner:String!, $name:String!, $number:Int!) {
+          issue:node(id:$issue) { ... on Issue {
+            id number repository { nameWithOwner }
+            closedByPullRequestsReferences(first:100,includeClosedPrs:true) {
+              totalCount pageInfo { hasNextPage } nodes { id }
+            }
+          } }
+          repository(owner:$owner,name:$name) { nameWithOwner
+            pullRequest(number:$number) { id number url baseRefName }
+          }
+        }''', {'issue': issue['id'], 'owner': owner, 'name': name, 'number': number})
+        try:
+            current, repo = data['issue'], data['repository']
+            pr = repo['pullRequest']
+            links = current['closedByPullRequestsReferences']
+            ids = [node['id'] for node in links['nodes']]
+            valid = (current['id'] == issue['id'] and current['number'] == issue['number'] and
+                     current['repository']['nameWithOwner'].casefold() == self.c['repo'].casefold() and
+                     repo['nameWithOwner'].casefold() == repository.casefold() and
+                     pr['number'] == number and pr['id'] and
+                     pr['url'].casefold() == f'https://github.com/{repository}/pull/{number}'.casefold() and
+                     pr['baseRefName'] == self.c['base_branch'] and
+                     links['pageInfo']['hasNextPage'] is False and
+                     type(links['totalCount']) is int and links['totalCount'] == len(ids) and
+                     len(set(ids)) == len(ids) and all(isinstance(value, str) and value for value in ids))
+        except (KeyError, TypeError, AttributeError):
+            valid = False
+        if not valid:
+            raise Halt('Native PR attachment identity or complete reference inventory could not be verified')
+        return {'issue': current['id'], 'pull_request': pr['id'], 'url': pr['url'],
+                'base': pr['baseRefName'], 'references': sorted(ids)}
+
+    def attach_chat_pr(self, issue_id, pr_id):
+        self.graphql('''mutation($input:AddCloseIssueReferencesInput!) {
+          addCloseIssueReferences(input:$input) { issue { id } }
+        }''', {'input': {'issueId': issue_id, 'pullRequestIds': [pr_id]}})
+
     def chat_pr(self, number, *, repository=None):
         """Read the linked PR and its checks without listing its changed files."""
         return self.call("pr", "view", number, "--repo", repository or self.c["repo"], "--json",

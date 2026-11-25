@@ -1,5 +1,6 @@
 """Chat milestones use a local outbox and fake Project reads/writes."""
 from contextlib import redirect_stderr, redirect_stdout
+import copy
 import io
 import json
 import os
@@ -34,6 +35,26 @@ class TrackingGitHub(PickupGitHub):
         self.pr_visibility = 'PUBLIC'
         self.closing_links = {'totalCount': 0, 'nodes': []}
         self.closer = None
+        self.native_refs = []
+        self.native_writes = []
+        self.lose_attachment_response = False
+        self.skip_attachment_write = False
+
+    def chat_pr_attachment(self, issue, repository, number):
+        pr_id = repository + ':' + str(number)
+        references = self.native_refs.copy()
+        if any(pr.get('number') == number for pr in self.closing_links['nodes']) and pr_id not in references:
+            references.append(pr_id)
+        return {'issue': issue['id'], 'pull_request': pr_id,
+                'url': f'https://github.com/{repository}/pull/{number}', 'base': self.c['base_branch'],
+                'references': sorted(references)}
+
+    def attach_chat_pr(self, issue_id, pr_id):
+        self.native_writes.append((issue_id, pr_id))
+        if not self.skip_attachment_write:
+            self.native_refs.append(pr_id)
+        if self.lose_attachment_response:
+            raise Halt('Fixture lost the native attachment response')
 
     def graphql(self, query, variables):
         if 'issueRepo:repository' in query:
@@ -157,6 +178,84 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.sync(), done)
         self.assertEqual(self.gh.comments, notes)
         self.assertEqual(self.gh.pr_reads, [41, 41, 41, 41])
+
+    def test_native_attachment_is_saved_and_repeated_sync_does_not_write_again(self):
+        self.start()
+        self.update('draft', 'QA', pr=41)
+        self.assertEqual(self.sync()['state'], 'synced')
+        self.assertEqual(self.gh.native_writes, [(self.gh.items[0]['id'], 'example/app:41')])
+        self.assertEqual(self.sync()['state'], 'synced')
+        self.assertEqual(len(self.gh.native_writes), 1)
+
+    def test_lost_attachment_response_is_read_back_without_a_second_write(self):
+        self.start()
+        self.update('draft', 'QA', pr=41)
+        self.gh.lose_attachment_response = True
+        self.assertEqual(self.sync()['state'], 'pending')
+        self.gh.lose_attachment_response = False
+        self.assertEqual(self.sync()['state'], 'synced')
+        self.assertEqual(len(self.gh.native_writes), 1)
+
+    def test_missing_attachment_readback_preserves_the_original_intent(self):
+        self.start()
+        self.update('draft', 'QA', pr=41)
+        self.gh.skip_attachment_write = True
+        self.assertEqual(self.sync()['state'], 'pending')
+        self.gh.skip_attachment_write = False
+        self.assertEqual(self.sync()['state'], 'pending')
+        self.assertEqual(len(self.gh.native_writes), 1)
+
+    def test_external_native_unlink_is_preserved(self):
+        self.start()
+        self.update('draft', 'QA', pr=41)
+        self.assertEqual(self.sync()['state'], 'synced')
+        self.gh.native_refs.clear()
+        self.assertEqual(self.sync()['state'], 'pending')
+        self.assertEqual(len(self.gh.native_writes), 1)
+
+    def test_ten_existing_native_attachments_are_preserved(self):
+        self.start()
+        self.update('draft', 'QA', pr=41)
+        self.gh.native_refs = ['other-' + str(number) for number in range(10)]
+        self.assertEqual(self.sync()['state'], 'pending')
+        self.assertEqual(self.gh.native_writes, [])
+
+    def test_native_reference_drift_before_write_does_not_attach(self):
+        self.start()
+        self.update('draft', 'QA', pr=41)
+        observe = self.gh.chat_pr_attachment
+        reads = 0
+
+        def changed(*args):
+            nonlocal reads
+            reads += 1
+            value = observe(*args)
+            if reads == 2:
+                value['references'].append('concurrent-pr')
+            return value
+
+        with patch.object(self.gh, 'chat_pr_attachment', side_effect=changed):
+            self.assertEqual(self.sync()['state'], 'pending')
+        self.assertEqual(self.gh.native_writes, [])
+
+    def test_native_attachment_transport_checks_identity_and_pagination(self):
+        issue = {'id': 'I1', 'number': 1}
+        payload = {'issue': {**issue, 'repository': {'nameWithOwner': 'example/app'},
+                             'closedByPullRequestsReferences': {'totalCount': 0, 'nodes': [],
+                                                               'pageInfo': {'hasNextPage': False}}},
+                   'repository': {'nameWithOwner': 'example/code', 'pullRequest': {
+                       'id': 'PR41', 'number': 41, 'url': 'https://github.com/example/code/pull/41',
+                       'baseRefName': 'main'}}}
+        with patch.object(self.gh, 'graphql', side_effect=lambda *args: copy.deepcopy(payload)):
+            observed = GitHub.chat_pr_attachment(self.gh, issue, 'example/code', 41)
+            self.assertEqual(observed['pull_request'], 'PR41')
+            payload['issue']['closedByPullRequestsReferences']['pageInfo']['hasNextPage'] = True
+            with self.assertRaisesRegex(Halt, 'complete reference inventory'):
+                GitHub.chat_pr_attachment(self.gh, issue, 'example/code', 41)
+            payload['issue']['closedByPullRequestsReferences']['pageInfo']['hasNextPage'] = False
+            payload['repository']['pullRequest']['baseRefName'] = 'other'
+            with self.assertRaisesRegex(Halt, 'identity'):
+                GitHub.chat_pr_attachment(self.gh, issue, 'example/code', 41)
 
     def test_verified_manual_merge_retries_an_interrupted_status_readback(self):
         self.gh.github_status['item-1'] = 'in-progress'

@@ -61,6 +61,14 @@ the link to the issue's QA milestone. This works across repositories and
 keeps the link on the issue side. A public issue can link only to a public PR.
 Existing `--pr NUMBER` links still refer to the tracked issue's repository.
 
+Sync attaches the verified PR to the issue through GitHub's native
+`addCloseIssueReferences` API. The issue's Development section and the board's
+Linked pull requests field then show GitHub's standard PR badge. This works
+across repositories and preserves existing attachments. A lost response is
+confirmed by readback before another operation; missing confirmation or an
+external unlink remains pending. Keep Linked pull requests visible in the
+saved board view. Milestone comments retain their PR link as supporting context.
+
 Record Review when the change is reviewed. A genuine blocker can be recorded as
 Blocked and later followed by Building or QA. PR-required work reaches Done
 after verification of the linked merge. For local-only work, record the

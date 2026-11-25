@@ -325,6 +325,37 @@ def sync_note(gh, path, record, event, pr_url):
     write_json(path, record)
 
 
+def sync_pr_attachment(gh, path, record, target):
+    repository, number = target
+    observed = gh.chat_pr_attachment(record['issue'], repository, number)
+    binding = {key: observed[key] for key in ('issue', 'pull_request', 'url', 'base')}
+    previous = record.get('native_pr_attachment')
+    if previous and previous['binding'] != binding:
+        raise Halt('Native PR attachment identity changed; inspect the saved receipt')
+    linked = observed['pull_request'] in observed['references']
+    if previous and not linked:
+        raise Halt('Native PR attachment needs readback or was removed; the write will not be repeated')
+    if not linked:
+        if len(observed['references']) >= 10:
+            raise Halt('The issue already has ten linked PRs; preserve them and inspect the attachment')
+        verified_card(gh, record)
+        if repository != gh.c['repo'].casefold():
+            gh.verify_chat_link_visibility(repository)
+        if gh.chat_pr_attachment(record['issue'], repository, number) != observed:
+            raise Halt('Native PR attachment scope or references changed before writing')
+        record['native_pr_attachment'] = {'state': 'intent', 'binding': binding, 'requested_at': now()}
+        write_json(path, record)
+        gh.attach_chat_pr(observed['issue'], observed['pull_request'])
+        checked = gh.chat_pr_attachment(record['issue'], repository, number)
+        if ({key: checked[key] for key in binding} != binding or
+                checked['pull_request'] not in checked['references']):
+            raise Halt('Native PR attachment write was not verified; inspect before another operation')
+    if not previous or previous['state'] != 'verified':
+        record['native_pr_attachment'] = {**record.get('native_pr_attachment', {}),
+                                           'state': 'verified', 'binding': binding, 'verified_at': now()}
+        write_json(path, record)
+
+
 def sync(gh, root, task):
     path = task_path(root, task)
     with exclusive(root), local_lock(path.with_suffix('.lock')):
@@ -360,6 +391,8 @@ def sync(gh, root, task):
                 raise Halt('The verified closing pull request changed before Done synced')
             if pull:
                 record['pull_request'] = pull
+                attachment_target = target or pr_target(gh.c['repo'], None, pull['url'])
+                sync_pr_attachment(gh, path, record, attachment_target)
                 if latest['stage'] != 'Done' and pull['state'] == 'MERGED':
                     # Save the completion event before writing either status field.
                     completion = {'id': 'sfc:pr-merged', 'stage': 'Done', 'pr': number,
