@@ -16,7 +16,7 @@ import threading
 from types import SimpleNamespace
 import uuid
 
-from .common import Halt, PACKAGE, Processes, common_dir, exclusive, git, load_config, now, owned_io, read_json, run, write_json
+from .common import Halt, NotDispatched, PACKAGE, Processes, common_dir, exclusive, git, load_config, now, owned_io, read_json, run, write_json
 from . import chat_tracking as tracking, review_policy
 from .factory import checks_pass, policy_reasons, secret_problem
 from .local_merge import LocalMerge
@@ -176,16 +176,16 @@ class Delivery:
         self.guard()
         _, number = tracking.pr_target(self.c['repo'], self.record.get('pr'), self.record.get('pr_url'))
         pr = self.gh.pr(number)
-        paths = [p for p in git(self.wt, 'diff', '--no-renames', '--name-only', '-z', self.base, self.head).split('\0') if p]
+        paths = [p for p in git(self.wt, 'diff', '--no-color', '--no-renames', '--name-only', '-z', self.base, self.head).split('\0') if p]
         lines = 0
-        for row in git(self.wt, 'diff', '--no-renames', '--numstat', '-z', self.base, self.head).split('\0'):
+        for row in git(self.wt, 'diff', '--no-color', '--no-renames', '--numstat', '-z', self.base, self.head).split('\0'):
             if row:
                 a, d, _ = row.split('\t', 2)
                 if '-' in (a, d):
                     raise Halt('Binary changes require a maintainer handoff')
                 lines += int(a) + int(d)
-        history = ['git', 'log', '--format=', '--no-renames', '--diff-merges=separate']
-        messages = run(['git', 'log', '--format=%B%x00', self.base + '..' + self.head], self.wt).stdout
+        history = ['git', 'log', '--no-color', '--format=', '--no-renames', '--diff-merges=separate']
+        messages = run(['git', 'log', '--no-color', '--format=%B%x00', self.base + '..' + self.head], self.wt).stdout
         commit_closure_scope(messages, self.c['repo'], self.card['number'], self.c['chat_merge_authority']['host'])
         history_paths = run([*history, '--name-only', '-z', self.base + '..' + self.head], self.wt).stdout.split('\0')
         history_stats = run([*history, '--numstat', '-z', self.base + '..' + self.head], self.wt).stdout
@@ -210,8 +210,11 @@ class Delivery:
                       self.record.get('native_pr_attachment', {}).get('state') != 'verified' or
                       self.record.get('native_pr_attachment_error')):
             raise Halt('Sync pending milestones and native attachment readback before merging')
-        if ci is not None and self.ci_candidate(snapshot, intent) != ci:
-            raise Halt('The applicable PR check candidate changed before dispatch')
+        if ci is not None:
+            if self.ci_candidate(snapshot, intent) != {k: ci[k] for k in ('head', 'base', 'merge')}:
+                raise Halt('The applicable PR check candidate changed before dispatch')
+            if ci['checks_source'] == self.head and (pr['headRefOid'] != self.head or not checks_pass(pr, self.c['allow_no_checks'])):
+                raise Halt('Newer applicable head checks are missing, pending or failed')
         intent.update(repository_id=snapshot['id'], pr_id=live['id'],
                       head_id=snapshot['head']['id'], base_id=snapshot['base']['id'])
         self.intent = intent
@@ -245,11 +248,13 @@ class Delivery:
     def check_ci(self):
         snapshot, _, _ = self.snapshot(self.intent)
         candidate = self.ci_candidate(snapshot, self.intent)
-        checks = self.gh.local_merge_checks(candidate['merge'])
+        source = candidate['merge']
+        checks = self.gh.local_merge_checks(source)
         if not isinstance(checks, list):
             raise Halt('The complete test-merge check inventory is missing')
         if not checks:  # GitHub uses head checks only when the test merge has none.
-            checks = self.gh.local_merge_checks(self.head)
+            source = self.head
+            checks = self.gh.local_merge_checks(source)
         if not isinstance(checks, list):
             raise Halt('The complete head check inventory is missing')
         after, _, _ = self.snapshot(self.intent)
@@ -257,7 +262,7 @@ class Delivery:
             raise Halt('PR check scope changed during inventory')
         if not checks_pass({'statusCheckRollup': checks}, self.c['allow_no_checks']):
             raise Halt('Required GitHub checks are missing, pending or failed')
-        return candidate
+        return {**candidate, 'checks_source': source, 'checks': checks}
 
     def prepare(self):
         previous = self.record.get('chat_merge')
@@ -430,7 +435,12 @@ class Delivery:
             intent['state'] = 'not-dispatched'
             write_json(self.path, self.record)
             raise
-        self.gh.atomic_fast_forward(intent)  # The sole write; unknown responses retain the intent.
+        try:
+            self.gh.atomic_fast_forward(intent)  # The sole write; unknown responses retain the intent.
+        except NotDispatched:
+            intent['state'] = 'not-dispatched'
+            write_json(self.path, self.record)
+            raise
         intent['state'] = 'responded'
         write_json(self.path, self.record)
         return {'state': 'awaiting-recognition', 'head': self.head, 'detail': 'Sync after GitHub confirms the merge'}

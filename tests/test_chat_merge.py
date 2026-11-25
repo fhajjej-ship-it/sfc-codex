@@ -11,7 +11,7 @@ from test_local_merge import AtomicGitHub
 from test_pickup import ticket
 from test_review_policy import PolicyProcesses, capabilities
 from sfc_lib import chat_merge, chat_tracking, pickup, review_policy
-from sfc_lib.common import Halt, Stopped, common_dir, exclusive, git, read_json, run, write_json
+from sfc_lib.common import Halt, NotDispatched, Stopped, common_dir, exclusive, git, read_json, run, write_json
 
 
 class ChatGitHub(AtomicGitHub):
@@ -151,6 +151,48 @@ class ChatMergeTests(unittest.TestCase):
             'issue': self.gh.items[0]['id'], 'pull_request': 'pr-node-101', 'base': 'main',
             'url': 'https://github.com/example/app/pull/101'}}
         write_json(self.path, record)
+
+    def test_newer_failing_applicable_head_rollup_prevents_dispatch(self):
+        self.reviewed()
+        original = self.gh.pr
+        def newer(number):
+            pr = original(number)
+            if read_json(self.path)['delivery_attempts'][0].get('final_checks'):
+                pr['statusCheckRollup'] = [{'status': 'COMPLETED', 'conclusion': 'FAILURE'}]
+            return pr
+        with patch.object(self.gh, 'pr', side_effect=newer), self.assertRaisesRegex(Halt, 'Newer applicable head checks'):
+            self.call(apply=True)
+        self.assertEqual(self.gh.attempts, [])
+        self.assertNotIn('chat_merge', read_json(self.path))
+
+    def test_prelaunch_io_cancel_is_known_unsent_and_preserves_allowance(self):
+        self.reviewed()
+        def no_launch(intent):
+            self.processes.cancel_check = lambda: True
+            with patch('sfc_lib.lifeline.spawn') as spawn:
+                with self.assertRaises(NotDispatched):
+                    run(['must-not-launch'], self.root)
+                spawn.assert_not_called()
+            raise NotDispatched('Fixture cancellation before launch')
+        with patch.object(self.gh, 'atomic_fast_forward', side_effect=no_launch), self.assertRaises(NotDispatched):
+            self.call(apply=True)
+        record = read_json(self.path)
+        self.assertEqual(record['chat_merge']['state'], 'not-dispatched')
+        self.assertEqual(len(record['delivery_attempts']), 1)
+        self.reviewed(); self.call(apply=True)
+        self.assertEqual(len(read_json(self.path)['delivery_attempts']), 2)
+        self.assertEqual(len(self.gh.attempts), 1)
+
+    def test_color_config_cannot_hide_transient_credential_content(self):
+        git(self.root, 'config', 'color.ui', 'always')
+        git(self.root, 'config', 'color.diff', 'always')
+        (self.root / 'value.txt').write_text('sk-' + 'x' * 30 + '\n')
+        git(self.root, 'commit', '-am', 'Transient credential')
+        (self.root / 'value.txt').write_text('fixed\n'); git(self.root, 'commit', '-am', 'Remove credential')
+        self.head = git(self.root, 'rev-parse', 'HEAD'); git(self.root, 'push', 'origin', 'topic')
+        with self.assertRaisesRegex(Halt, 'live-looking credential'):
+            self.call()
+        self.assertNotIn('delivery_attempts', read_json(self.path))
 
     def test_final_query_observes_draft_changes_after_the_last_card_read(self):
         self.reviewed()

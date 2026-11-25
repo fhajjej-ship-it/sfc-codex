@@ -35,6 +35,10 @@ class Stopped(Halt):
     """A requested interruption, distinct from a failed run."""
 
 
+class NotDispatched(Stopped):
+    """A context-owned IO child was definitely not spawned."""
+
+
 class ObserverInactive(Stopped):
     """The observed child exited normally during activity IO."""
 
@@ -120,7 +124,7 @@ def execute_owned_io(argv, cwd, timeout, input, env, owner):
     from .lifeline import spawn, terminate
     cancel, lifetime = owner
     if cancel():
-        raise Stopped('Delivery IO stopped before launch')
+        raise NotDispatched('Delivery IO stopped before launch')
     process, writer = spawn(argv, enabled=lifetime or SESSION_LIFELINE, cwd=cwd, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True,
                             env={**(os.environ if env is None else env), 'SFC_WORKER': '1'})

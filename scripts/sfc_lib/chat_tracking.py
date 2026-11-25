@@ -213,9 +213,8 @@ def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None
         if delivery == 'local-only' and target:
             raise Halt('This task is recorded as local-only; it cannot link a pull request')
         linked = target or bound
-        if (closes_issue and record.get('pr_role') == 'milestone' and
-                record.get('pull_request', {}).get('state') in ('MERGED', 'CLOSED')):
-            raise Halt('A terminal milestone PR cannot become the delivery PR; record a distinct delivery PR')
+        if closes_issue and record.get('pr_role') == 'milestone':
+            raise Halt('A milestone PR cannot become the delivery PR; record a distinct delivery PR')
         if milestone_only and record.get('closes_issue'):
             raise Halt('Preserve the existing closing relationship; it cannot become milestone-only implicitly')
         if milestone_only and not linked:

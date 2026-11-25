@@ -235,11 +235,14 @@ class ChatTrackingTests(unittest.TestCase):
     def test_partial_merge_stays_open_and_can_link_the_actual_delivery_pr(self):
         self.start()
         self.update('partial', 'QA', pr=41, milestone_only=True)
-        self.sync(); self.gh.pull['state'] = 'MERGED'
+        self.sync()
+        with self.assertRaisesRegex(Halt, 'milestone PR'):
+            self.update('promote-stale-open-partial', 'Review', closes_issue=True)
+        self.gh.pull['state'] = 'MERGED'
         partial = self.sync()
         self.assertEqual((partial['board_stage'], partial['pr_role']), ('QA', 'milestone'))
         self.assertNotIn((1, 'Done'), self.gh.writes)
-        with self.assertRaisesRegex(Halt, 'terminal milestone'):
+        with self.assertRaisesRegex(Halt, 'milestone PR'):
             self.update('promote-finished-partial', 'Done', closes_issue=True)
         with self.assertRaisesRegex(Halt, 'milestone-only'):
             self.update('premature', 'Done')

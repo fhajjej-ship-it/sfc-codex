@@ -83,7 +83,7 @@ QA, Review or merged Done update.
 Codex records a partial PR with `--milestone-only`. Its merge records progress
 without completing the task. After verified terminal readback and pending-write
 reconciliation, the task can link its actual delivery PR; the earlier receipt is
-retained; a terminal partial PR cannot be promoted to delivery. Omitted flags and existing records retain their delivery-PR meaning.
+retained; a milestone-only PR cannot be promoted to delivery. Omitted flags and existing records retain their delivery-PR meaning.
 `--closes-issue` additionally authorizes GitHub's native closing relationship.
 
 Record Review when the change is reviewed. A genuine blocker can be recorded as
