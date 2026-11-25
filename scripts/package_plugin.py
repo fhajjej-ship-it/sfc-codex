@@ -87,6 +87,16 @@ def export(destination, files):
     return {'directory': str(destination), 'files': len(files)}
 
 
+def build_claude(dist, version, files):
+    """Archive and unpacked folder side by side: sfc-<version>-claude(.zip).
+
+    The name is appended, never derived with Path.with_suffix: a version such
+    as 0.2.2 would make '.2-claude' look like the extension.
+    """
+    folder = Path(dist) / f"sfc-{version}-claude"
+    return {**package(folder.with_name(folder.name + '.zip'), files), **export(folder, files)}
+
+
 def package(destination, files):
     destination = Path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -106,9 +116,7 @@ def main():
     args = parser.parse_args()
     info = validate()
     if args.claude:
-        files = claude_contents()
-        stem = ROOT / 'dist' / f"sfc-{info['version']}-claude"
-        print(json.dumps({**package(stem.with_suffix('.zip'), files), **export(stem, files)}, indent=2))
+        print(json.dumps(build_claude(ROOT / 'dist', info['version'], claude_contents()), indent=2))
         return
     suffix = '-codex' if args.codex_root else ''
     destination = ROOT / 'dist' / f"sfc-{info['version']}{suffix}.zip"
