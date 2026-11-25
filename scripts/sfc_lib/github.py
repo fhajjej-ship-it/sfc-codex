@@ -407,59 +407,6 @@ class GitHub:
         report["ready"] = report["ready"] and report["work_types"]["ready"]
         return report
 
-    def chat_pr_card_snapshot(self, card):
-        from .chat_pr_card import FIELD_NAME
-        self.verify_repository()
-        metadata = self.metadata()
-        data = self.dashboard_data()
-        fields = [field for field in data['project']['fields']['nodes'] if field['name'] == FIELD_NAME]
-        if len(fields) > 1 or fields and fields[0]['dataType'] != 'TEXT':
-            raise Halt('SFC PR field is ambiguous or has the wrong type')
-        view = self.factory_view(data)
-        if view is None:
-            views = [v for v in data['project']['views']['nodes'] if v['layout'] == 'BOARD_LAYOUT' and
-                     [f['id'] for f in v['verticalGroupByFields']['nodes']] == [metadata['field']]]
-            if len(views) != 1:
-                raise Halt('Select one SFC board view before showing PR links')
-            view = views[0]
-        if view['layout'] != 'BOARD_LAYOUT':
-            raise Halt('The selected SFC view must be a board to show PR cards')
-        item = self.graphql('''query($item:ID!, $name:String!) {
-          node(id:$item) { ... on ProjectV2Item {
-            id project { id } content { ... on Issue { id number repository { nameWithOwner } } }
-            fieldValueByName(name:$name) { ... on ProjectV2ItemFieldTextValue {
-              text field { ... on ProjectV2Field { id } }
-            } }
-          } }
-        }''', {'item': card['item_id'], 'name': FIELD_NAME})['node']
-        if (not item or item['id'] != card['item_id'] or item['project']['id'] != metadata['id'] or
-                item.get('content') != {key: card[key] for key in ('id', 'number', 'repository')}):
-            raise Halt('PR card issue/item/project identity changed')
-        value = item['fieldValueByName']
-        field = fields[0]['id'] if fields else None
-        if value is not None and (not field or value.get('field') != {'id': field} or
-                                  not isinstance(value.get('text'), str)):
-            raise Halt('PR card text field identity or value is invalid')
-        return {'project': metadata['id'], 'item': item['id'], 'view': view['id'], 'field': field,
-                'visible': [f['id'] for f in view['configuration']['visibleFields']['nodes']],
-                'value': value['text'] if value else ''}
-
-    def create_chat_pr_field(self, project):
-        from .chat_pr_card import FIELD_NAME
-        self.graphql('''mutation($input:CreateProjectV2FieldInput!) {
-          createProjectV2Field(input:$input) { projectV2Field { ... on ProjectV2Field { id } } }
-        }''', {'input': {'projectId': project, 'name': FIELD_NAME, 'dataType': 'TEXT'}})
-
-    def show_chat_pr_field(self, view, visible):
-        self.graphql('''mutation($input:UpdateProjectV2ViewInput!) {
-          updateProjectV2View(input:$input) { projectV2View { id } }
-        }''', {'input': {'viewId': view, 'configuration': {'visibleFieldIds': visible}}})
-
-    def write_chat_pr_field(self, project, item, field, url):
-        self.graphql('''mutation($input:UpdateProjectV2ItemFieldValueInput!) {
-          updateProjectV2ItemFieldValue(input:$input) { projectV2Item { id } }
-        }''', {'input': {'projectId': project, 'itemId': item, 'fieldId': field, 'value': {'text': url}}})
-
     def activity_snapshot(self, card):
         """Read identity and only the two targeted text values before every write."""
         from .priority import inventory

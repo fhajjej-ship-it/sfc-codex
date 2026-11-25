@@ -1,6 +1,5 @@
 """Chat milestones use a local outbox and fake Project reads/writes."""
 from contextlib import redirect_stderr, redirect_stdout
-import copy
 import io
 import json
 import os
@@ -35,32 +34,6 @@ class TrackingGitHub(PickupGitHub):
         self.pr_visibility = 'PUBLIC'
         self.closing_links = {'totalCount': 0, 'nodes': []}
         self.closer = None
-        self.pr_field = 'pr-field'
-        self.pr_visible = ['stage', 'labels']
-        self.pr_values = {}
-        self.pr_card_writes = []
-        self.lose_pr_card_response = None
-        self.skip_pr_card_write = False
-
-    def chat_pr_card_snapshot(self, card):
-        return {'project': 'p', 'item': card['item_id'], 'view': 'board', 'field': self.pr_field,
-                'visible': self.pr_visible.copy(), 'value': self.pr_values.get(card['item_id'], '')}
-
-    def pr_card_write(self, kind, operation):
-        self.pr_card_writes.append(kind)
-        if not self.skip_pr_card_write:
-            operation()
-        if self.lose_pr_card_response == kind:
-            raise Halt('Fixture lost the PR card write response')
-
-    def create_chat_pr_field(self, project):
-        self.pr_card_write('field', lambda: setattr(self, 'pr_field', 'pr-field'))
-
-    def show_chat_pr_field(self, view, visible):
-        self.pr_card_write('view', lambda: setattr(self, 'pr_visible', visible.copy()))
-
-    def write_chat_pr_field(self, project, item, field, url):
-        self.pr_card_write('value', lambda: self.pr_values.update({item: url}))
 
     def graphql(self, query, variables):
         if 'issueRepo:repository' in query:
@@ -184,88 +157,6 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.sync(), done)
         self.assertEqual(self.gh.comments, notes)
         self.assertEqual(self.gh.pr_reads, [41, 41, 41, 41])
-
-    def test_pr_link_is_visible_on_the_saved_card_and_repeated_sync_is_read_only(self):
-        self.start()
-        self.update('draft', 'QA', pr=41)
-        self.assertEqual(self.sync()['state'], 'synced')
-        self.assertEqual(self.gh.pr_values['item-1'], 'PR #41 · ' + self.gh.pull['url'])
-        self.assertEqual(self.gh.pr_visible, ['stage', 'labels', 'pr-field'])
-        writes = self.gh.pr_card_writes.copy()
-        self.assertEqual(self.sync()['state'], 'synced')
-        self.assertEqual(self.gh.pr_card_writes, writes)
-
-    def lost_card_response(self, kind):
-        self.gh.pr_field = None
-        self.gh.lose_pr_card_response = kind
-        self.start()
-        self.update('draft', 'QA', pr=41)
-        self.assertEqual(self.sync()['state'], 'pending')
-        self.gh.lose_pr_card_response = None
-        self.assertEqual(self.sync()['state'], 'synced')
-        self.assertEqual(self.gh.pr_card_writes.count(kind), 1)
-
-    def test_lost_field_creation_response_is_confirmed_without_repeating(self):
-        self.lost_card_response('field')
-
-    def test_lost_view_response_is_confirmed_without_repeating(self):
-        self.lost_card_response('view')
-
-    def test_lost_card_value_response_is_confirmed_without_repeating(self):
-        self.lost_card_response('value')
-
-    def test_missing_write_and_external_link_edits_remain_pending(self):
-        self.start()
-        self.update('draft', 'QA', pr=41)
-        self.gh.skip_pr_card_write = True
-        self.assertEqual(self.sync()['state'], 'pending')
-        writes = self.gh.pr_card_writes.copy()
-        self.gh.skip_pr_card_write = False
-        self.assertEqual(self.sync()['state'], 'pending')
-        self.assertEqual(self.gh.pr_card_writes, writes)
-
-    def test_external_card_link_and_field_changes_are_preserved(self):
-        self.start()
-        self.update('draft', 'QA', pr=41)
-        self.assertEqual(self.sync()['state'], 'synced')
-        writes = self.gh.pr_card_writes.copy()
-        self.gh.pr_values['item-1'] = 'https://github.com/example/other/pull/99'
-        self.assertEqual(self.sync()['state'], 'pending')
-        self.assertEqual(self.gh.pr_card_writes, writes)
-        self.gh.pr_values['item-1'] = self.gh.pull['url']
-        self.gh.pr_field = 'replacement-field'
-        self.assertEqual(self.sync()['state'], 'pending')
-        self.assertEqual(self.gh.pr_card_writes, writes)
-
-    def test_pr_card_transport_checks_field_types_and_item_identity(self):
-        from test_dashboard import DashboardGitHub, view
-        github = DashboardGitHub(styled=True, views=[view()])
-        github.c = self.c
-        card = self.gh.items[0]
-        item = {'id': card['item_id'], 'project': {'id': 'project-id'},
-                'content': {key: card[key] for key in ('id', 'number', 'repository')},
-                'fieldValueByName': None}
-        original = github.graphql
-
-        def graphql(query, variables):
-            if 'fieldValueByName' in query:
-                return {'node': copy.deepcopy(item)}
-            return original(query, variables)
-
-        with patch.object(github, 'graphql', side_effect=graphql):
-            self.assertIsNone(github.chat_pr_card_snapshot(card)['field'])
-            github.create_chat_pr_field('project-id')
-            snapshot = github.chat_pr_card_snapshot(card)
-            self.assertEqual(snapshot['field'], 'new-SFC PR')
-            item['fieldValueByName'] = {'text': self.gh.pull['url'], 'field': {'id': 'new-SFC PR'}}
-            self.assertEqual(github.chat_pr_card_snapshot(card)['value'], self.gh.pull['url'])
-            item['project']['id'] = 'other-project'
-            with self.assertRaisesRegex(Halt, 'identity changed'):
-                github.chat_pr_card_snapshot(card)
-            item['project']['id'] = 'project-id'
-            github.data['project']['fields']['nodes'][-1]['dataType'] = 'NUMBER'
-            with self.assertRaisesRegex(Halt, 'wrong type'):
-                github.chat_pr_card_snapshot(card)
 
     def test_verified_manual_merge_retries_an_interrupted_status_readback(self):
         self.gh.github_status['item-1'] = 'in-progress'
