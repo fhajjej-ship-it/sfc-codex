@@ -360,6 +360,8 @@ def sync(gh, root, task):
                 raise Halt('The verified closing pull request changed before Done synced')
             if pull:
                 record['pull_request'] = pull
+                from .chat_pr_card import sync as sync_pr_card
+                sync_pr_card(gh, path, record, pull, lambda: verified_card(gh, record))
                 if latest['stage'] != 'Done' and pull['state'] == 'MERGED':
                     # Save the completion event before writing either status field.
                     completion = {'id': 'sfc:pr-merged', 'stage': 'Done', 'pr': number,

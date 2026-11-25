@@ -60,6 +60,11 @@ can run during verification. Pass the exact URL returned by GitHub with
 the link to the issue's QA milestone. This works across repositories and
 keeps the link on the issue side. A public issue can link only to a public PR.
 Existing `--pr NUMBER` links still refer to the tracked issue's repository.
+Sync also displays the verified URL in an `SFC PR` text field on the saved
+board cards. It adds the field to the Factory view, or the single board grouped
+by SFC Status, preserving other visible fields. Ambiguous views, conflicting
+field types or externally changed links need inspection. Pending writes are
+confirmed by readback before another operation, preserving lost responses.
 
 Record Review when the change is reviewed. A genuine blocker can be recorded as
 Blocked and later followed by Building or QA. PR-required work reaches Done
