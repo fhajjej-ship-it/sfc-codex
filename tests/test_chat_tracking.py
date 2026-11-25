@@ -179,9 +179,38 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(self.gh.comments, notes)
         self.assertEqual(self.gh.pr_reads, [41, 41, 41, 41])
 
+    def test_milestone_pr_does_not_authorize_issue_closure(self):
+        self.start()
+        self.update('partial', 'QA', pr=41)
+        self.assertEqual(self.sync()['board_stage'], 'QA')
+        self.assertEqual(self.gh.native_writes, [])
+        self.update('complete-scope', 'Review', closes_issue=True)
+        self.sync()
+        self.assertEqual(len(self.gh.native_writes), 1)
+
+    def test_closure_intent_requires_a_recorded_pr(self):
+        self.start()
+        with self.assertRaises(Halt):
+            self.update('closure-without-pr', 'QA', closes_issue=True)
+        self.assertEqual(len(read_json(chat_tracking.task_path(self.root, self.task))['events']), 1)
+
+    def test_explicit_sync_detects_unlink_after_done_without_reopening_or_rewriting(self):
+        self.start()
+        self.update('draft', 'QA', pr=41, closes_issue=True)
+        self.sync()
+        self.gh.pull['state'] = 'MERGED'
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+        notes, writes = self.gh.comments.copy(), self.gh.writes.copy()
+        self.gh.native_refs.clear()
+        checked = self.sync()
+        self.assertEqual(checked['board_stage'], 'Done')
+        self.assertEqual(checked['native_pr_attachment']['state'], 'pending')
+        self.assertEqual((self.gh.comments, self.gh.writes), (notes, writes))
+        self.assertEqual(len(self.gh.native_writes), 1)
+
     def test_native_attachment_is_saved_and_repeated_sync_does_not_write_again(self):
         self.start()
-        self.update('draft', 'QA', pr=41)
+        self.update('draft', 'QA', pr=41, closes_issue=True)
         self.assertEqual(self.sync()['state'], 'synced')
         self.assertEqual(self.gh.native_writes, [(self.gh.items[0]['id'], 'example/app:41')])
         self.assertEqual(self.sync()['state'], 'synced')
@@ -189,7 +218,7 @@ class ChatTrackingTests(unittest.TestCase):
 
     def test_lost_attachment_response_is_read_back_without_a_second_write(self):
         self.start()
-        self.update('draft', 'QA', pr=41)
+        self.update('draft', 'QA', pr=41, closes_issue=True)
         self.gh.lose_attachment_response = True
         waiting = self.sync()
         self.assertEqual((waiting['state'], waiting['board_stage']), ('synced', 'QA'))
@@ -200,7 +229,7 @@ class ChatTrackingTests(unittest.TestCase):
 
     def test_missing_attachment_readback_preserves_the_original_intent(self):
         self.start()
-        self.update('draft', 'QA', pr=41)
+        self.update('draft', 'QA', pr=41, closes_issue=True)
         self.gh.skip_attachment_write = True
         self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
         self.gh.skip_attachment_write = False
@@ -209,7 +238,7 @@ class ChatTrackingTests(unittest.TestCase):
 
     def test_external_native_unlink_is_preserved(self):
         self.start()
-        self.update('draft', 'QA', pr=41)
+        self.update('draft', 'QA', pr=41, closes_issue=True)
         self.assertEqual(self.sync()['state'], 'synced')
         self.gh.native_refs.clear()
         self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
@@ -217,7 +246,7 @@ class ChatTrackingTests(unittest.TestCase):
 
     def test_removed_attachment_does_not_block_verified_milestones_or_merge_completion(self):
         self.start()
-        self.update('draft', 'QA', pr=41)
+        self.update('draft', 'QA', pr=41, closes_issue=True)
         self.sync()
         self.gh.native_refs.clear()
         self.update('reviewed', 'Review')
@@ -235,14 +264,14 @@ class ChatTrackingTests(unittest.TestCase):
 
     def test_ten_existing_native_attachments_are_preserved(self):
         self.start()
-        self.update('draft', 'QA', pr=41)
+        self.update('draft', 'QA', pr=41, closes_issue=True)
         self.gh.native_refs = ['other-' + str(number) for number in range(10)]
         self.assertEqual(self.sync()['native_pr_attachment']['state'], 'pending')
         self.assertEqual(self.gh.native_writes, [])
 
     def test_native_reference_drift_before_write_does_not_attach(self):
         self.start()
-        self.update('draft', 'QA', pr=41)
+        self.update('draft', 'QA', pr=41, closes_issue=True)
         observe = self.gh.chat_pr_attachment
         reads = 0
 
@@ -407,7 +436,9 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertIn(pr['url'], self.gh.comments[-1]['body'])
         self.assertEqual(self.gh.pr_reads, [])
         self.assertEqual(self.gh.merges, [])
-        self.assertEqual(self.sync(), result)
+        notes = self.gh.comments.copy()
+        self.assertEqual(self.sync()['board_stage'], 'Done')
+        self.assertEqual(self.gh.comments, notes)
         self.assertEqual(self.gh.writes.count((1, 'Done')), 1)
 
     def test_unverified_closures_preserve_review(self):
@@ -616,7 +647,9 @@ class ChatTrackingTests(unittest.TestCase):
         github.metadata.return_value = {'id': 'project'}
         github.configure_dashboard.return_value = {'ready': True}
         github.dashboard.return_value = {'ready': True}
-        arguments = ['--root', str(self.root)]
+        checkout = self.root / '.sfc/worktrees/setup-from-linked'
+        git(self.root, 'worktree', 'add', '--detach', checkout)
+        arguments = ['--root', str(checkout)]
         onboard = ['onboard', '--repo', 'example/app', '--owner', 'example',
                    '--project', '1', '--base', 'main']
         with patch.object(sfc, 'GitHub', return_value=github), patch.object(sfc, 'Factory') as legacy:
@@ -633,6 +666,10 @@ class ChatTrackingTests(unittest.TestCase):
                 self.assertEqual(sfc.main([*arguments, 'doctor']), 0)
                 worker.assert_not_called()
             self.assertEqual(json.loads(output.getvalue())['worker_execution'], 'current Codex chat')
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(sfc.main([*arguments, 'onboard-finish']), 0)
+            self.assertEqual(json.loads(output.getvalue())['mode'], 'chat')
+            self.assertFalse((checkout / '.sfc/config.json').exists())
             legacy.assert_not_called()
         self.assertEqual(load_config(self.root)['workflow_mode'], 'chat')
         self.assertFalse(autostart.paths(self.root)[1].exists())

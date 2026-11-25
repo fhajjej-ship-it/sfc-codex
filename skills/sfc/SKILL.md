@@ -34,10 +34,13 @@ plugin code and skills read-only.
 3. Carry authorized shared-repository delivery through a PR. Open it as a draft during QA after the
    focused checks pass. Record the exact returned URL with `track update
    --pr-url` and sync the QA milestone so the issue links to the draft.
-   Verify GitHub's native Development attachment and the board's Linked pull
-   requests badge. Sync creates and verifies that native relationship through
+   When the PR delivers the tracked issue, record `--closes-issue` and verify
+   GitHub's native Development attachment and the board's Linked pull requests
+   badge. Sync creates and verifies that closing relationship through
    `addCloseIssueReferences`, including across repositories. A comment alone
    does not establish the attachment. Preserve existing links and pending writes.
+   A partial or tracking-only PR keeps its milestone link without adding a
+   closing relationship. Infer the intended scope from the requested work.
    Report attachment warnings separately from verified milestone delivery.
    GitHub CI can run while verification continues. Move to Review as the change is
    reviewed and follow the repository's normal checks and merge permissions.

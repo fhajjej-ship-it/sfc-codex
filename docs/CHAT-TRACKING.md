@@ -62,10 +62,12 @@ the link to the issue's QA milestone. This works across repositories and
 keeps the link on the issue side. A public issue can link only to a public PR.
 Existing `--pr NUMBER` links still refer to the tracked issue's repository.
 
-Sync attaches the verified PR to the issue through GitHub's native
+When the PR is intended to deliver and close the tracked issue, record
+`--closes-issue`. Sync then attaches the verified PR through GitHub's native
 `addCloseIssueReferences` API. The issue's Development section and the board's
-Linked pull requests field then show GitHub's standard PR badge. This works
-across repositories and preserves existing attachments. A lost response is
+Linked pull requests field show GitHub's standard PR badge. A milestone link
+alone does not authorize that closing relationship. This works across
+repositories and preserves existing attachments. A lost response is
 confirmed by readback before another operation; missing confirmation or an
 external unlink remains pending. Keep Linked pull requests visible in the
 saved board view. Milestone comments retain their PR link as supporting context.
@@ -95,6 +97,7 @@ delivery steps for the required verification and merge methods.
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track update \
   --task chat-example-export --event draft --stage QA \
   --pr-url https://github.com/owner/code-repo/pull/42 \
+  --closes-issue \
   --summary "Focused CSV export tests passed. A draft PR is open for CI."
 python3 "<plugin>/scripts/sfc.py" --root "<repo>" track sync --task chat-example-export
 ```

@@ -348,6 +348,8 @@ def main(argv=None):
     tracked_pr.add_argument('--pr', type=int, help='pull request number in the tracked issue repository')
     tracked_pr.add_argument('--pr-url', help='exact GitHub pull request URL, including from another repository')
     tracked_update.add_argument('--local-done', action='store_true')
+    tracked_update.add_argument('--closes-issue', action='store_true',
+                                help='the recorded PR delivers and should close the tracked issue')
     tracked_status = tracking.add_parser('status', help='read the local issue binding and pending milestones')
     select_task = tracked_status.add_mutually_exclusive_group(required=True)
     select_task.add_argument('--task')
@@ -421,6 +423,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         root = repo_root(args.root)
+        if args.command in ('doctor', 'onboard-finish'):
+            root = chat_tracking.project_root(root)
         if (((args.command in ('run', 'watch') and not args.dry_run) or
              (args.command == 'autostart' and args.enable) or
              (args.command in ('recover-ticket', 'recover-findings', 'recover-worker-output') and args.grant_one))
@@ -529,7 +533,7 @@ def main(argv=None):
             elif args.action == 'update':
                 result = chat_tracking.update(root, config, task=args.task, event_id=args.event, stage=args.stage,
                                               summary=args.summary, pr=args.pr, pr_url=args.pr_url,
-                                              local_done=args.local_done)
+                                              local_done=args.local_done, closes_issue=args.closes_issue)
             elif args.action == 'status':
                 result = chat_tracking.status(root, config, task=args.task, prefix=args.prefix)
             else:

@@ -165,7 +165,8 @@ def pr_target(repository, number, url):
     return match[1].casefold(), int(match[2])
 
 
-def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None, local_done=False):
+def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None, local_done=False,
+           closes_issue=False):
     path = task_path(root, task)
     if not isinstance(event_id, str) or ID.fullmatch(event_id) is None or event_id == 'start' or stage not in STAGES:
         raise Halt('Use a new event ID and a supported chat milestone')
@@ -178,6 +179,8 @@ def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None
     if pr_url is not None:
         pr_url = pr_url.casefold()
     event = {'id': event_id, 'stage': stage, 'summary': summary, 'pr': pr, 'pr_url': pr_url, 'local_done': local_done}
+    if closes_issue:
+        event['closes_issue'] = True
     with local_lock(path.with_suffix('.lock')):
         record = read_task(path, config)
         for previous in record['events']:
@@ -194,6 +197,8 @@ def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None
         if delivery == 'local-only' and target:
             raise Halt('This task is recorded as local-only; it cannot link a pull request')
         linked = target or bound
+        if closes_issue and not linked:
+            raise Halt('Issue closure intent requires a recorded pull request')
         if delivery == 'pr-required' and (local_done or stage == 'Done' and not linked):
             raise Halt('This task requires a linked merged pull request before Done')
         if (local_done and (stage != 'Done' or linked) or
@@ -204,6 +209,8 @@ def update(root, config, *, task, event_id, stage, summary, pr=None, pr_url=None
                 record['pr_url'] = pr_url
             elif pr is not None:
                 record['pr'] = pr
+        if closes_issue:
+            record['closes_issue'] = True
         record['events'].append(event)
         write_json(path, record)
     return view(record)
@@ -343,6 +350,8 @@ def sync_pr_attachment(gh, path, record, target):
     linked = observed['pull_request'] in observed['references']
     if previous and not linked:
         raise Halt('Native PR attachment needs readback or was removed; the write will not be repeated')
+    if not linked and not record.get('closes_issue'):
+        return  # A milestone PR alone does not authorize automatic issue closure.
     if not linked:
         if len(observed['references']) >= 10:
             raise Halt('The issue already has ten linked PRs; preserve them and inspect the attachment')
@@ -377,7 +386,7 @@ def sync(gh, root, task):
         follow_pr = target is not None and latest['stage'] != 'Done'
         pending = any(not event.get('synced') for event in record['events'])
         attachment_pending = bool(record.get('native_pr_attachment_error') or
-                                  record.get('native_pr_attachment', {}).get('state') == 'intent')
+                                  record.get('native_pr_attachment'))
         closing_pr_url = latest.get('closing_pr_url') if pending or attachment_pending else None
         follow_closure = (target is None and record.get('delivery') != 'local-only'
                           and (latest['stage'] in ('QA', 'Review') or closing_pr_url is not None))
