@@ -52,6 +52,10 @@ Read the repository instructions and saved merge policy before publishing.
 Verify that existing user authority covers the selected repository, base and
 task. A shared delivery request covers opening its PR when the repository
 instructions permit it. Keep explicit local choices and human merge gates.
+New setup defaults to `auto`; when the user authorizes automatic delivery,
+onboard with `--allow-merge` to retain `chat_merge_authority` for the selected
+repository and base. Validate that scope against the current configuration
+and requested work before using it. Preserve existing configurations.
 Explain a missing authorization once with the concrete PR ready for review.
 
 Finish the required checks and independent review on the exact candidate.

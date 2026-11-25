@@ -162,9 +162,12 @@ def save_project_config(root, config):
 def onboard_chat(root, args):
     if chat_tracking.chat_mode(root) or (root / '.sfc/onboarding.json').exists():
         raise Halt('SFC is already configured. Use doctor to check the configured Project.')
-    if (args.auto_start is True or args.session_lifetime is True or args.allow_merge
-            or args.release_config or args.release_authorization or args.merge_policy == 'auto'):
-        raise Halt('SFC tracks work started in Codex chat. Set up the Project with manual merging.')
+    if (args.auto_start is True or args.session_lifetime is True
+            or args.release_config or args.release_authorization):
+        raise Halt('SFC tracks work started in Codex chat. Set up the Project without a background worker or release grant.')
+    merge_policy = args.merge_policy or 'auto'
+    if args.allow_merge and merge_policy != 'auto':
+        raise Halt('--allow-merge requires the automatic merge policy')
     repo = args.repo or GitHub(root, {"project": {}}).call("repo", "view", "--json", "nameWithOwner")["nameWithOwner"]
     branch = args.base or git(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False).removeprefix("origin/")
     if not branch:
@@ -173,10 +176,13 @@ def onboard_chat(root, args):
         "version": 1, "workflow_mode": "chat", "repo": repo, "base_branch": branch,
         "project": {"owner": args.owner, "number": args.project}, "status_field": args.status_field,
         "verify_commands": args.verify or [], "activity_timezone": args.activity_timezone,
-        "merge_policy": "human", "merge_mode": "github-protected", "allow_no_checks": False,
+        "merge_policy": merge_policy, "merge_mode": "github-protected", "allow_no_checks": False,
         "auto_max_lines": 400, "max_workers": 2, "max_cycles": 20, "max_no_progress": 3,
         "max_attempts": 2, "worker_timeout": 1200, "verify_timeout": 900,
     })
+    if args.allow_merge:
+        config['chat_merge_authority'] = {'repo': repo, 'base_branch': branch,
+                                         'scope': 'user-requested-tasks'}
     gh = GitHub(root, config)
     identity = gh.onboarding_identity()
     digest = autostart.digest([config, identity])
@@ -190,7 +196,9 @@ def onboard_chat(root, args):
     autostart.verify_onboarding_identity(gh, identity)
     save_project_config(root, config)
     return {"mode": "chat", "config": str(root / ".sfc/config.json"), "project_id": metadata["id"],
-            "merge_policy": "human", "dashboard": gh.configure_dashboard()}
+            "merge_policy": config['merge_policy'],
+            "chat_merge_authority": config.get('chat_merge_authority'),
+            "dashboard": gh.configure_dashboard()}
 
 
 def doctor_chat(root):
@@ -249,13 +257,14 @@ def main(argv=None):
                        help=argparse.SUPPRESS)
     setup.add_argument('--preview', action='store_true', help='verify the repository and Project before applying setup')
     setup.add_argument('--expected-review', help='require the same configuration and Project identity as --preview')
-    setup.add_argument('--allow-merge', action='store_true', help=argparse.SUPPRESS)
+    setup.add_argument('--allow-merge', action='store_true',
+                       help='authorize eligible automatic merges for user-requested chat tasks on the selected repository and base')
     setup.add_argument('--release-config', type=Path, help=argparse.SUPPRESS)
     setup.add_argument('--release-mode', choices=('publish', 'draft', 'off'), default='publish', help=argparse.SUPPRESS)
     setup.add_argument('--release-authorization', help=argparse.SUPPRESS)
     setup.add_argument('--review-efficiency', choices=('qualified', 'baseline'), default='qualified', help=argparse.SUPPRESS)
     setup.add_argument("--merge-policy", choices=("human", "auto"),
-                       help="chat tracking leaves merging to you (human)")
+                       help="automatic delivery by default; human keeps an explicit merge gate")
     setup.add_argument("--merge-mode", choices=("github-protected", "local-verification"),
                        default="github-protected", help=argparse.SUPPRESS)
     setup.add_argument("--allow-no-checks", action="store_true",

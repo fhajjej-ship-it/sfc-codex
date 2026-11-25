@@ -508,7 +508,8 @@ class ChatTrackingTests(unittest.TestCase):
             with redirect_stdout(io.StringIO()) as output:
                 self.assertEqual(sfc.main([*arguments, *onboard, '--expected-review',
                                            preview['setup_review']['review_digest']]), 0)
-            self.assertEqual(json.loads(output.getvalue())['merge_policy'], 'human')
+            self.assertEqual(json.loads(output.getvalue())['merge_policy'], 'auto')
+            self.assertIsNone(json.loads(output.getvalue())['chat_merge_authority'])
             with redirect_stdout(io.StringIO()) as output, patch.object(sfc, 'run') as worker:
                 self.assertEqual(sfc.main([*arguments, 'doctor']), 0)
                 worker.assert_not_called()
@@ -517,3 +518,27 @@ class ChatTrackingTests(unittest.TestCase):
         self.assertEqual(load_config(self.root)['workflow_mode'], 'chat')
         self.assertFalse(autostart.paths(self.root)[1].exists())
         github.metadata.assert_called_once_with(create=True, project_id='project')
+
+    def test_chat_onboarding_retains_only_explicit_merge_scope_and_human_choice(self):
+        (self.root / '.sfc/config.json').unlink()
+        github = Mock()
+        github.onboarding_identity.return_value = {'project_id': 'project'}
+        github.metadata.return_value = {'id': 'project'}
+        github.configure_dashboard.return_value = {'ready': True}
+        command = ['--root', str(self.root), 'onboard', '--repo', 'example/app',
+                   '--owner', 'example', '--project', '1', '--base', 'main']
+        with patch.object(sfc, 'GitHub', return_value=github):
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(sfc.main([*command, '--preview', '--merge-policy', 'human']), 0)
+            preview = json.loads(output.getvalue())
+            self.assertEqual(preview['proposed_config']['merge_policy'], 'human')
+            self.assertNotIn('chat_merge_authority', preview['proposed_config'])
+            with redirect_stderr(io.StringIO()):
+                self.assertEqual(sfc.main([*command, '--merge-policy', 'human', '--allow-merge']), 1)
+            self.assertFalse((self.root / '.sfc/config.json').exists())
+            with redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(sfc.main([*command, '--allow-merge']), 0)
+            applied = json.loads(output.getvalue())
+        expected = {'repo': 'example/app', 'base_branch': 'main', 'scope': 'user-requested-tasks'}
+        self.assertEqual(applied['chat_merge_authority'], expected)
+        self.assertEqual(load_config(self.root)['chat_merge_authority'], expected)

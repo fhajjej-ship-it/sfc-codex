@@ -17,6 +17,14 @@ then `onboard` to save the board configuration. If GitHub requires you to save t
 view grouping manually, open the returned URL, set **Column by → SFC Status**,
 then ask Codex to check the view with `doctor`.
 
+New setup defaults to automatic merge policy. Explain the repository, base,
+required checks and change-size limit during setup. When the user authorizes
+automatic delivery for their requested tasks, include `--allow-merge`; setup
+retains that exact repository/base scope as `chat_merge_authority`. Offer
+`--merge-policy human` for an explicit merge gate. Existing project settings
+retain their saved policy and authority. An automatic policy preference alone
+still needs the user's merge authority.
+
 The approved prompt hook guides the current Codex chat. Its selected model
 implements and reviews the work. It can run the repository's usual check
 commands and open an authorized pull request. The board follows the work as
