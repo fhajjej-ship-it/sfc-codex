@@ -82,19 +82,25 @@ Keep the extracted directory as the installer's registered source.
 
 ## Use with Claude Code
 
-SFC chat tracking also works in Claude Code. A Claude Code layout is built from
-this source; there is no Claude release asset yet. From a checkout:
+SFC chat tracking also works in Claude Code. Download `sfc-0.2.3-claude.zip` and
+`sfc-0.2.3-claude.zip.sha256` from the
+[release assets](https://github.com/fhajjej-ship-it/sfc-codex/releases/latest).
+In the download directory, run:
 
 ```sh
-python3 scripts/package_plugin.py --claude
-claude plugin marketplace add "$PWD/dist/sfc-0.2.3-claude"
+shasum -a 256 -c sfc-0.2.3-claude.zip.sha256
+unzip sfc-0.2.3-claude.zip
+claude plugin marketplace add "$PWD/sfc"
 claude plugin install sfc@sfc-marketplace
 ```
+
+Keep the extracted `sfc` folder: Claude Code runs the plugin from it. To build
+the same layout from a checkout instead, see [SFC for Claude Code](docs/CLAUDE-CODE.md).
 
 Restart Claude Code and review the SFC hooks in `/hooks`. Setup and tracking
 work the same way as in Codex. Requires Claude Code, Python 3.10+, Git and an
 authenticated GitHub CLI. `track merge` still needs the Codex CLI for its
-independent review; see [SFC for Claude Code](docs/CLAUDE-CODE.md).
+independent review.
 
 ## How it works
 

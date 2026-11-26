@@ -8,14 +8,27 @@ a project needs no extra setting for Claude Code.
 
 ## Install
 
-Build the Claude Code layout from a source checkout. There is no Claude
-release asset yet.
+Each release includes `sfc-<version>-claude.zip` and its `.sha256` file next
+to the Codex package. Download both from the
+[latest release](https://github.com/fhajjej-ship-it/sfc-codex/releases/latest),
+then in the download directory run:
 
 ```sh
-python3 scripts/package_plugin.py --claude
+shasum -a 256 -c sfc-<version>-claude.zip.sha256
+unzip sfc-<version>-claude.zip
+claude plugin marketplace add "$PWD/sfc"
+claude plugin install sfc@sfc-marketplace
 ```
 
-This writes `dist/sfc-<version>-claude.zip` (plus `.sha256`) and an unpacked
+Claude Code runs a local-marketplace plugin from its folder, so keep the
+extracted `sfc` folder. To upgrade, extract the new release into a different
+folder, then run `claude plugin marketplace remove sfc-marketplace`, add the new
+folder and install again.
+
+### Build from a checkout
+
+`python3 scripts/package_plugin.py --claude` builds the same layout from source.
+It writes `dist/sfc-<version>-claude.zip` (plus `.sha256`) and an unpacked
 `dist/sfc-<version>-claude/`. Neither overwrites an earlier export. Install from
 the unpacked folder as a local marketplace:
 
