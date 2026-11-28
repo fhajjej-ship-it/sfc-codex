@@ -24,6 +24,33 @@ def validate_output_schema(schema, location):
             validate_output_schema(child, f'{location}.{key}')
 
 
+def maintainer_workspace(root):
+    """The maintainer source tree, not a package export or a checkout of one.
+
+    Packages never contain AGENTS.md, so installed copies, release candidates
+    and git repositories rebuilt from package contents are exempt.
+    """
+    return (root / 'AGENTS.md').is_file()
+
+
+def validate_maintainer_workspace(root):
+    """Claude Code sessions in this checkout must not start Codex MCP servers.
+
+    Claude Code reads the root .mcp.json as project MCP configuration, but its
+    launch arguments use Codex's ${PLUGIN_ROOT} macro, which Claude Code leaves
+    empty. The checked-in .claude/settings.json disables every such server. It is
+    maintainer configuration only and is never part of a package.
+    """
+    settings = json.loads((root / '.claude/settings.json').read_text())
+    disabled = settings.get('disabledMcpjsonServers')
+    assert isinstance(disabled, list) and all(isinstance(v, str) for v in disabled), \
+        '.claude/settings.json disabledMcpjsonServers must be a list of server names'
+    servers = json.loads((root / '.mcp.json').read_text())['mcpServers']
+    codex_only = {name for name, server in servers.items() if '${PLUGIN_ROOT}' in json.dumps(server)}
+    assert codex_only <= set(disabled), \
+        f'Claude Code would launch Codex-only MCP servers: {sorted(codex_only - set(disabled))}'
+
+
 def validate():
     compatibility = json.loads((ROOT / ".codex-plugin/plugin.json").read_text())
     portable = (ROOT / 'plugin.json').exists()
@@ -89,6 +116,8 @@ def validate():
                     assert '"${CLAUDE_PLUGIN_ROOT}/hooks/guard.py"' in hook["command"]
                     assert "${PLUGIN_ROOT}" not in hook["command"].replace("${CLAUDE_PLUGIN_ROOT}", "")
         assert not (ROOT / "claude/.mcp.json").exists(), "The Codex session MCP is not part of the Claude layout"
+    if maintainer_workspace(ROOT):
+        validate_maintainer_workspace(ROOT)
     assert (ROOT / "LICENSE").is_file()
     return {"valid": True, "name": manifest["name"], "version": manifest["version"],
             "format": 'portable-source' if portable else 'codex-resolved', "skills": sorted(found)}
