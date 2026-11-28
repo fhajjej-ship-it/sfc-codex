@@ -20,12 +20,16 @@
 | UI refinement | `sfc-ui-refine` uses current Codex browser/native tools, bounded critique loop |
 | Visual recap / map | `sfc-visual` generates a self-contained local HTML artifact |
 | Git sync | `sfc-git-sync` handles selected commits, merge integration and non-force push |
-| Command guards | Codex SessionStart/PreToolUse hooks for common literal secret/path/delete/push mistakes |
+| Command guards | Codex and Claude Code SessionStart/PreToolUse hooks for common literal secret/path/delete/push mistakes |
 
 Operating boundaries:
 
-- Codex only. No Claude/OpenCode host discovery, Claude usage meter, Workflow
-  runtime, `.claude/` files, external skill downloads or automatic model ladder.
+- Codex, plus Claude Code chat tracking through a separate plugin layout (see
+  [SFC for Claude Code](CLAUDE-CODE.md)). No OpenCode host discovery, Claude usage
+  meter, Workflow runtime, external skill downloads or automatic model ladder.
+  Neither package ships `.claude/` files; the source checkout's
+  `.claude/settings.json` only stops Claude Code sessions there from starting the
+  Codex session MCP.
 - New onboarding defaults to auto policy; explicit human merging remains
   available. Existing saved policies remain unchanged. Auto also needs separate
   run/watch merge authority; policy alone grants no scope or session. Protected
