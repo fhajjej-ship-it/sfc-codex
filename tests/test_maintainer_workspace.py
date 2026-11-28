@@ -12,8 +12,14 @@ from validate_plugin import maintainer_workspace, validate_maintainer_workspace
 
 
 class MaintainerWorkspaceTests(unittest.TestCase):
+    def temporary_directory(self):
+        # TestCase.enterContext is Python 3.11+; SFC supports 3.10.
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        return Path(directory.name)
+
     def workspace(self, settings, servers=None):
-        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        root = self.temporary_directory()
         shutil.copy(ROOT / '.mcp.json', root / '.mcp.json')
         if servers is not None:
             (root / '.mcp.json').write_text(json.dumps({'mcpServers': servers}))
@@ -44,7 +50,7 @@ class MaintainerWorkspaceTests(unittest.TestCase):
 
     def test_only_the_maintainer_source_tree_requires_the_setting(self):
         self.assertTrue(maintainer_workspace(ROOT))
-        export = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        export = self.temporary_directory()
         for name, data in contents().items():
             (export / name).parent.mkdir(parents=True, exist_ok=True)
             (export / name).write_bytes(data)
